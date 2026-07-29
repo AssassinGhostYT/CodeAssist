@@ -11,6 +11,8 @@ jobs:
     name: Build Android APK
     runs-on: ubuntu-latest
     env:
+      # Explicitly unset CI_CORE_ONLY so settings.gradle.kts includes :ide-android module
+      CI_CORE_ONLY: "false"
       JAVA_TOOL_OPTIONS: "-Xmx6g"
       GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6g"
     steps:
@@ -37,6 +39,6 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CodeAssist-Fix-APK
+          name: CodeAssist-Fix-APK.apk
           path: ide-android/build/outputs/apk/debug/*.apk
           retention-days: 14
