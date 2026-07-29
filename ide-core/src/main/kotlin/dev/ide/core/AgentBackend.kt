@@ -236,14 +236,13 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     private fun loadPersistedChat() {
         val raw = pref(CHAT_HISTORY_PREF) ?: return
         runCatching {
-            val element = kotlinx.serialization.json.Json.parseToJsonElement(raw)
-            val arr = element as? kotlinx.serialization.json.JsonArray ?: return
-            val loaded = arr.mapNotNull { el ->
-                val obj = el as? kotlinx.serialization.json.JsonObject ?: return@mapNotNull null
-                val id = obj["id"]?.toString()?.toLongOrNull() ?: msgIds.incrementAndGet()
-                val roleStr = obj["role"]?.toString()?.trim('"') ?: "assistant"
-                val role = if (roleStr.equals("user", ignoreCase = true)) UiAgentRole.USER else UiAgentRole.ASSISTANT
-                val text = obj["text"]?.toString()?.trim('"')?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
+            val lines = raw.split("|||")
+            val loaded = lines.mapNotNull { line ->
+                val parts = line.split("::: ", limit = 3)
+                if (parts.size < 3) return@mapNotNull null
+                val id = parts[0].toLongOrNull() ?: msgIds.incrementAndGet()
+                val role = if (parts[1].equals("user", ignoreCase = true)) UiAgentRole.USER else UiAgentRole.ASSISTANT
+                val text = parts[2].replace("\\n", "\n").replace("\\:", ":")
                 UiAgentMessage(id = id, role = role, text = text, streaming = false)
             }
             if (loaded.isNotEmpty()) {
@@ -255,16 +254,11 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
 
     private fun savePersistedChat() {
         val messages = _chatState.value.messages.filter { !it.streaming && !it.isError }
-        val array = kotlinx.serialization.json.buildJsonArray {
-            messages.forEach { msg ->
-                add(kotlinx.serialization.json.buildJsonObject {
-                    put("id", msg.id)
-                    put("role", msg.role.name.lowercase())
-                    put("text", msg.text)
-                })
-            }
+        val serialized = messages.joinToString("|||") { msg ->
+            val cleanText = msg.text.replace("\n", "\\n").replace(":", "\\:")
+            "${msg.id}::: ${msg.role.name.lowercase()}::: $cleanText"
         }
-        ctx.manager?.setPreference("settings.$AI_PAGE.$CHAT_HISTORY_PREF", array.toString())
+        ctx.manager?.setPreference("settings.$AI_PAGE.$CHAT_HISTORY_PREF", serialized)
     }
 
     // --- session lifecycle ---
