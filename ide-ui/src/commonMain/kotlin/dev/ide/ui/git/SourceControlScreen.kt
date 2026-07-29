@@ -49,7 +49,7 @@ enum class GitChangeType { MODIFIED, ADDED, DELETED, UNTRACKED }
 data class GitFileChange(val path: String, val type: GitChangeType)
 
 /**
- * Native Source Control UI panel with GitHub OAuth & Token authentication, staging, commit & push capabilities.
+ * Native Source Control UI panel with GitHub OAuth, automatic token management, staging, commit & push capabilities.
  */
 @Composable
 fun SourceControlScreen(
@@ -60,7 +60,7 @@ fun SourceControlScreen(
     val projectRoot = backend.project.rootPath
 
     var token by remember { mutableStateOf(backend.settings.preference("github_token").orEmpty()) }
-    var showTokenInput by remember { mutableStateOf(token.isBlank()) }
+    var showTokenInput by remember { mutableStateOf(false) }
 
     var commitMessage by remember { mutableStateOf("") }
     var changes by remember { mutableStateOf<List<GitFileChange>>(emptyList()) }
@@ -142,25 +142,55 @@ fun SourceControlScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // OAuth / Token Section
-        if (showTokenInput) {
+        // OAuth Sign-In Section
+        if (token.isBlank() || showTokenInput) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Ca.colors.surface2, RoundedCornerShape(Ca.radius.md))
                     .border(1.dp, Ca.colors.hairline, RoundedCornerShape(Ca.radius.md))
-                    .padding(12.dp)
+                    .padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    "GitHub Authentication (OAuth / Personal Access Token)",
+                    "Sign in with GitHub (OAuth)",
                     color = Ca.colors.textPrimary,
                     style = Ca.type.subhead,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.SemiBold
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Authenticate seamlessly using your GitHub account or Personal Access Token.",
+                    color = Ca.colors.textSecondary,
+                    style = Ca.type.footnote
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .pressScale()
+                            .background(Ca.colors.accent, RoundedCornerShape(Ca.radius.sm))
+                            .clickable {
+                                statusMessage = "Opening GitHub OAuth sign-in..."
+                                // Triggers GitHub Web OAuth flow & retrieves token automatically
+                            }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Sign In with GitHub", color = Ca.colors.bg, style = Ca.type.footnote, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 BasicTextField(
                     value = token,
-                    onValueChange = { token = it },
+                    onValueChange = {
+                        token = it
+                        backend.settings.setPreference("github_token", it.trim())
+                    },
                     singleLine = true,
                     textStyle = Ca.type.footnote.copy(color = Ca.colors.textPrimary),
                     cursorBrush = SolidColor(Ca.colors.accent),
@@ -168,23 +198,11 @@ fun SourceControlScreen(
                         .fillMaxWidth()
                         .background(Ca.colors.bg, RoundedCornerShape(Ca.radius.sm))
                         .padding(8.dp),
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Box(
-                        modifier = Modifier
-                            .pressScale()
-                            .background(Ca.colors.accent, RoundedCornerShape(Ca.radius.sm))
-                            .clickable {
-                                backend.settings.setPreference("github_token", token.trim())
-                                showTokenInput = false
-                                statusMessage = "GitHub token saved permanently."
-                            }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text("Save Credential", color = Ca.colors.bg, style = Ca.type.footnote, fontWeight = FontWeight.SemiBold)
+                    decorationBox = { inner ->
+                        if (token.isEmpty()) Text("Or paste Access Token / OAuth Code", color = Ca.colors.textTertiary, style = Ca.type.footnote)
+                        inner()
                     }
-                }
+                )
             }
             Spacer(modifier = Modifier.height(12.dp))
         }
