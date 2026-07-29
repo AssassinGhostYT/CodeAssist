@@ -136,7 +136,7 @@ fun SourceControlScreen(
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Icon(
-                    CaIcons.settings,
+                    CaIcons.gear,
                     contentDescription = "GitHub Auth Settings",
                     modifier = Modifier.size(20.dp).clickable { showTokenInput = !showTokenInput },
                     tint = if (token.isNotBlank()) Ca.colors.accent else Ca.colors.textSecondary
