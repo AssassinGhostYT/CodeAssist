@@ -274,7 +274,7 @@ fun SourceControlScreen(
                                             statusMessage = "Push failed: $err"
                                         }
                                     }
-                                catch (e: Exception) {
+                                } catch (e: Exception) {
                                     withContext(Dispatchers.Main) { statusMessage = "Error: ${e.message}" }
                                 } finally {
                                     withContext(Dispatchers.Main) { isBusy = false }
