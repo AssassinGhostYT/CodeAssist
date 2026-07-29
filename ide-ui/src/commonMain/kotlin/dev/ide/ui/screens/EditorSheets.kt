@@ -89,6 +89,12 @@ internal fun DestinationSheets(
     onCloseProject: () -> Unit,
     fileActions: FileActions,
 ) {
+    BottomSheet(visible = state.sheetDest == RailDestination.Source, onDismiss = { state.sheetDest = null }, heightFraction = 0.85f) {
+        dev.ide.ui.git.SourceControlScreen(
+            backend = state.backend,
+            modifier = Modifier.fillMaxWidth().weight(1f),
+        )
+    }
     BottomSheet(visible = state.moreOpen, onDismiss = { state.moreOpen = false }, heightFraction = 0.62f) {
         // The "More" rows are UI-side actions resolved from the registry; the host bridges them to the app's
         // navigation/theme callbacks. Adding a row is a registration (see BuiltInUiActions), not an edit here.
