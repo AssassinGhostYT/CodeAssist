@@ -32,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,6 +59,7 @@ fun SourceControlScreen(
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
     val projectRoot = backend.project.rootPath
 
     val oauthInteraction = remember { MutableInteractionSource() }
@@ -179,8 +181,10 @@ fun SourceControlScreen(
                             .pressScale(oauthInteraction)
                             .background(Ca.colors.accent, RoundedCornerShape(Ca.radius.sm))
                             .clickable(oauthInteraction, indication = null) {
-                                statusMessage = "Opening GitHub OAuth sign-in..."
-                                // Triggers GitHub Web OAuth flow & retrieves token automatically
+                                statusMessage = "Opening browser for GitHub OAuth..."
+                                runCatching {
+                                    uriHandler.openUri("https://github.com/settings/tokens/new?description=CodeAssist&scopes=repo,workflow")
+                                }
                             }
                             .padding(vertical = 8.dp),
                         contentAlignment = Alignment.Center
@@ -270,7 +274,7 @@ fun SourceControlScreen(
                                             statusMessage = "Push failed: $err"
                                         }
                                     }
-                                } catch (e: Exception) {
+                                catch (e: Exception) {
                                     withContext(Dispatchers.Main) { statusMessage = "Error: ${e.message}" }
                                 } finally {
                                     withContext(Dispatchers.Main) { isBusy = false }
