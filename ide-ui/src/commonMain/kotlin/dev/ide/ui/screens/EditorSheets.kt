@@ -105,11 +105,9 @@ internal fun DestinationSheets(
             )
         }
     }
-    BottomSheet(visible = state.sheetDest == RailDestination.Source, onDismiss = { state.sheetDest = null }, heightFraction = 0.55f) {
-        ComingSoon(
-            icon = CaIcons.gitBranch,
-            title = stringResource(Res.string.edsheet_source_control),
-            description = stringResource(Res.string.edsheet_source_control_desc),
+    BottomSheet(visible = state.sheetDest == RailDestination.Source, onDismiss = { state.sheetDest = null }, heightFraction = 0.85f) {
+        dev.ide.ui.git.SourceControlScreen(
+            backend = state.backend,
             modifier = Modifier.fillMaxWidth().weight(1f),
         )
     }
