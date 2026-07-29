@@ -3,6 +3,7 @@ package dev.ide.ui.git
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,6 +59,9 @@ fun SourceControlScreen(
 ) {
     val scope = rememberCoroutineScope()
     val projectRoot = backend.project.rootPath
+
+    val oauthInteraction = remember { MutableInteractionSource() }
+    val commitInteraction = remember { MutableInteractionSource() }
 
     var token by remember { mutableStateOf(backend.settings.preference("github_token").orEmpty()) }
     var showTokenInput by remember { mutableStateOf(false) }
@@ -172,9 +176,9 @@ fun SourceControlScreen(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .pressScale()
+                            .pressScale(oauthInteraction)
                             .background(Ca.colors.accent, RoundedCornerShape(Ca.radius.sm))
-                            .clickable {
+                            .clickable(oauthInteraction, indication = null) {
                                 statusMessage = "Opening GitHub OAuth sign-in..."
                                 // Triggers GitHub Web OAuth flow & retrieves token automatically
                             }
@@ -234,9 +238,9 @@ fun SourceControlScreen(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .pressScale()
+                        .pressScale(commitInteraction)
                         .background(if (commitMessage.isNotBlank() && !isBusy) Ca.colors.accent else Ca.colors.surface3, RoundedCornerShape(Ca.radius.sm))
-                        .clickable(enabled = commitMessage.isNotBlank() && !isBusy) {
+                        .clickable(interactionSource = commitInteraction, indication = null, enabled = commitMessage.isNotBlank() && !isBusy) {
                             scope.launch(Dispatchers.IO) {
                                 isBusy = true
                                 statusMessage = "Committing and pushing..."
