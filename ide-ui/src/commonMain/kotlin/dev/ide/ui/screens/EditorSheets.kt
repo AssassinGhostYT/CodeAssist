@@ -89,24 +89,7 @@ internal fun DestinationSheets(
     onCloseProject: () -> Unit,
     fileActions: FileActions,
 ) {
-    val indexStatus by state.backend.search.indexStatus.collectAsState()
-    if (compact) {
-        BottomSheet(visible = state.searchOpen, onDismiss = { state.searchOpen = false }, heightFraction = 0.85f) {
-            SearchScreen(
-                backend = state.backend,
-                indexing = indexStatus.building,
-                onOpenAt = { p, o -> state.openAt(p, o); state.searchOpen = false },
-                modifier = Modifier.fillMaxWidth().weight(1f),
-            )
-        }
-    }
-    BottomSheet(visible = state.sheetDest == RailDestination.Source, onDismiss = { state.sheetDest = null }, heightFraction = 0.85f) {
-        dev.ide.ui.git.SourceControlScreen(
-            backend = state.backend,
-            modifier = Modifier.fillMaxWidth().weight(1f),
-        )
-    }
-    BottomSheet(visible = state.sheetDest == RailDestination.More || state.moreOpen, onDismiss = { state.sheetDest = null; state.moreOpen = false }, heightFraction = 0.62f) {
+    BottomSheet(visible = state.moreOpen, onDismiss = { state.moreOpen = false }, heightFraction = 0.62f) {
         // The "More" rows are UI-side actions resolved from the registry; the host bridges them to the app's
         // navigation/theme callbacks. Adding a row is a registration (see BuiltInUiActions), not an edit here.
         val moreHost = remember(state) {
