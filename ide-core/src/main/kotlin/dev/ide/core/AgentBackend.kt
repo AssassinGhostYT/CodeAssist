@@ -229,6 +229,44 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         }
     }
 
+    init {
+        loadPersistedChat()
+    }
+
+    private fun loadPersistedChat() {
+        val raw = pref(CHAT_HISTORY_PREF) ?: return
+        runCatching {
+            val element = kotlinx.serialization.json.Json.parseToJsonElement(raw)
+            val arr = element as? kotlinx.serialization.json.JsonArray ?: return
+            val loaded = arr.mapNotNull { el ->
+                val obj = el as? kotlinx.serialization.json.JsonObject ?: return@mapNotNull null
+                val id = obj["id"]?.toString()?.toLongOrNull() ?: msgIds.incrementAndGet()
+                val roleStr = obj["role"]?.toString()?.trim('"') ?: "assistant"
+                val role = if (roleStr.equals("user", ignoreCase = true)) UiAgentRole.USER else UiAgentRole.ASSISTANT
+                val text = obj["text"]?.toString()?.trim('"')?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
+                UiAgentMessage(id = id, role = role, text = text, streaming = false)
+            }
+            if (loaded.isNotEmpty()) {
+                msgIds.set(loaded.maxOf { it.id })
+                _chatState.value = UiAgentChatState(messages = loaded, busy = false)
+            }
+        }
+    }
+
+    private fun savePersistedChat() {
+        val messages = _chatState.value.messages.filter { !it.streaming && !it.isError }
+        val array = kotlinx.serialization.json.buildJsonArray {
+            messages.forEach { msg ->
+                add(kotlinx.serialization.json.buildJsonObject {
+                    put("id", msg.id)
+                    put("role", msg.role.name.lowercase())
+                    put("text", msg.text)
+                })
+            }
+        }
+        ctx.manager?.setPreference("settings.$AI_PAGE.$CHAT_HISTORY_PREF", array.toString())
+    }
+
     // --- session lifecycle ---
 
     override fun newSession() {
@@ -239,6 +277,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         sessionAllowAll = false
         _permissionRequest.value = null
         _chatState.value = UiAgentChatState()
+        ctx.manager?.setPreference("settings.$AI_PAGE.$CHAT_HISTORY_PREF", "")
     }
 
     override fun stop() {
@@ -360,6 +399,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
                 busy = false,
             )
         }
+        savePersistedChat()
     }
 
     private fun appendError(message: String, canRetry: Boolean = false) {
@@ -372,6 +412,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
                 busy = false,
             )
         }
+        savePersistedChat()
     }
 
     private fun systemPrompt(): String =
@@ -403,6 +444,8 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
     companion object {
         const val AI_PAGE = "ai"
         const val MODE_PREF = "agent.permissionMode"
+        const val CHAT_HISTORY_PREF = "chatHistory"
         const val GATEWAY = "gateway"
     }
 }
+
