@@ -93,6 +93,44 @@ class ReflectiveDispatcherTest {
     }
 
     @Test
+    fun internalMemberMangledWithModuleSuffixIsFoundAndInvoked() {
+        // The reported "material 3 expressive" preview crash `no method `expressive`(0) on
+        // androidx.compose.material3.MotionScheme$Companion`: `MotionScheme.Companion.expressive()` is an
+        // `internal` function, so Kotlin mangles its JVM name to `expressive$material3`. Dispatch must match the
+        // Kotlin name `expressive` against that mangled JVM name. `InternalHolder.reveal()` is `internal`, so it
+        // is mangled `reveal$<module>` exactly like `expressive$material3`.
+        val callee = ResolvedCallable.Library(
+            displayName = "reveal", ownerFqn = InternalHolder::class.java.name, methodName = "reveal",
+            paramTypes = emptyList(), isStatic = false, isConstructor = false, isInline = false, descriptorPrecise = true,
+        )
+        // Guard: the fixture is only meaningful if the compiler actually mangled the name (else the OLD matcher
+        // would already find `reveal` and this wouldn't test the fix).
+        assertTrue(
+            InternalHolder::class.java.methods.none { it.name == "reveal" } &&
+                InternalHolder::class.java.methods.any { it.name.startsWith("reveal\$") },
+            "expected the internal member to be mangled to reveal\$<module>",
+        )
+        assertEquals("secret", dispatcher.dispatch(call(DispatchKind.MEMBER, callee), receiver = InternalHolder(), args = emptyList()))
+    }
+
+    @Test
+    fun mangledNameMatchesHandlesValueClassAndInternalManglings() {
+        // Plain + value-class manglings (unchanged behavior).
+        assertTrue(mangledNameMatches("expressive", "expressive"))
+        assertTrue(mangledNameMatches("Text-Nvy7gAk", "Text"), "value-class name-<hash>")
+        // internal `$<module>` mangling (the MotionScheme case) — and layered on the value-class form.
+        assertTrue(mangledNameMatches("expressive\$material3", "expressive"), "internal name\$module")
+        assertTrue(mangledNameMatches("blur-7f3a2b1\$ui", "blur"), "internal on top of value-class mangling")
+        // A DIFFERENT internal member on the same companion must NOT match.
+        assertTrue(!mangledNameMatches("standard\$material3", "expressive"))
+        // Compiler synthetics that also carry a `$` must NOT be read as the internal form of the base name.
+        assertTrue(!mangledNameMatches("expressive\$default", "expressive"), "\$default is a synthetic, not a member")
+        assertTrue(!mangledNameMatches("getRed\$annotations", "getRed"), "\$annotations is a synthetic")
+        // A multi-segment `$` suffix isn't an internal module suffix (a lambda/accessor synthetic).
+        assertTrue(!mangledNameMatches("foo\$lambda\$0", "foo"))
+    }
+
+    @Test
     fun kotlinMappedTypeOwnerResolves() {
         // A Kotlin classifier owner (kotlin.text.StringBuilder) maps to its JVM class for reflection.
         val sb = dispatcher.dispatch(call(DispatchKind.CONSTRUCTOR, lib("kotlin.text.StringBuilder", "StringBuilder", isCtor = true)), null, emptyList())
@@ -366,6 +404,29 @@ class ReflectiveDispatcherTest {
     }
 
     @Test
+    fun boxedValueClassArgFitsADefaultedExtensionSyntheticParam() {
+        // The reported preview crash `no static background(2) on androidx.compose.foundation.BackgroundKt`:
+        // `Modifier.background(color)` where `background(color: Color, shape: Shape = RectangleShape)`. Three
+        // things stack here: (1) `color` arrived BOXED — it was read through `State<Color>.value` (a JVM getter
+        // returning `Object`), whereas a `Color(…)` LITERAL is the UNBOXED `long` and already worked; (2) the
+        // function's value-class param mangles the JVM name to `background-<hash>` and unboxes the param to
+        // `long`; (3) `shape` is DEFAULTED, so the receiver+color call (arity 2) has no exact-arity match
+        // against the arity-3 method and must route through the `background-<hash>$default` synthetic — whose
+        // per-slot fit check rejected the boxed value class (a plain `isInstance` can't see through it), even
+        // though the bind's `coerceArg` would have unboxed it. `StyleTarget.tint(Swatch(5))` mirrors it exactly:
+        // a top-level EXTENSION (a static `…Kt` facade with the receiver first), `Swatch`→`int`, `blend`
+        // defaulted, fed a boxed `Swatch`.
+        val callee = ResolvedCallable.Library(
+            displayName = "tint", ownerFqn = "dev.ide.interp.ReflectiveDispatcherTestKt", methodName = "tint",
+            paramTypes = emptyList(), isStatic = true, isConstructor = false, isInline = false, descriptorPrecise = true,
+        )
+        val call = RNode.Call(callee, DispatchKind.EXTENSION, receiver = null, args = emptyList(), callSiteKey = CallSiteKey(0), source = SourceSpan(0, 0))
+        // `listOf<Any?>(Swatch(5))` BOXES the value class (element type `Any?`), as a value-class-typed state read produces.
+        assertEquals(1 + 5 + 3, dispatcher.dispatch(call, receiver = StyleTarget(1), args = listOf<Any?>(Swatch(5))),
+            "a boxed value-class extension arg must reach a mangled unboxed-underlying param through the \$default synthetic")
+    }
+
+    @Test
     fun incomparableOverloadsAreBrokenByArgumentRuntimeType() {
         // Two applicable overloads whose parameter types are pairwise INCOMPARABLE (neither a subtype of the
         // other) — the `Intent.putExtra(String, CharSequence)` vs `(String, Serializable)` shape. With no
@@ -393,6 +454,10 @@ class ReflectiveDispatcherTest {
 
     /** A Kotlin class with a mutable `value` property → `getValue()`/`setValue(x)` (a `MutableState` stand-in). */
     class Holder(var value: String)
+
+    /** A class with an `internal` member — Kotlin mangles its JVM name to `reveal$<module>`, exactly like
+     *  Material3's internal `MotionScheme.Companion.expressive()` (`expressive$material3`). */
+    class InternalHolder { internal fun reveal(): String = "secret" }
 
     /** A method taking a value class's UNBOXED underlying primitive (`Int`), like `offset(…, float, float)` takes
      *  the `Dp`'s float — a boxed value-class arg must be unboxed to bind. */
@@ -450,3 +515,18 @@ class ReflectiveDispatcherTest {
     interface ScopeIface { fun Mod.weighted(w: Int, fill: Boolean = true): String }
     class ScopeImpl : ScopeIface { override fun Mod.weighted(w: Int, fill: Boolean): String = "w=$w fill=$fill" }
 }
+
+/** An extension-receiver stand-in for `Modifier` in `Modifier.background(…)`. */
+class StyleTarget(val base: Int)
+
+/** An inline value class whose unboxed underlying is a primitive — `Color`→`long` in miniature (`Swatch`→
+ *  `int`). The interpreter hands `background` a BOXED one (a `State<Color>.value` read returns `Object`). */
+@JvmInline
+value class Swatch(val rgb: Int)
+
+/** Mirrors `Modifier.background(color: Color, shape: Shape = RectangleShape)`: a top-level EXTENSION (→ a
+ *  static `…Kt` facade method taking the receiver first) whose value parameter is an inline value class (→ the
+ *  JVM name is mangled `tint-<hash>` and the param is the unboxed `int`) plus a DEFAULTED trailing param (→ a
+ *  receiver+swatch call has no exact-arity match against the arity-3 method and routes through the
+ *  `tint-<hash>$default` synthetic). The exact shape that produced `no static background(2)`. */
+fun StyleTarget.tint(swatch: Swatch, blend: Int = 3): Int = base + swatch.rgb + blend

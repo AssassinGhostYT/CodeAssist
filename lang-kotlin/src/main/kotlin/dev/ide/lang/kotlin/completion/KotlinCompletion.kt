@@ -23,6 +23,8 @@ import dev.ide.lang.kotlin.symbols.KotlinType
 import dev.ide.lang.resolve.Modifier
 import dev.ide.lang.resolve.SymbolKind
 import com.intellij.psi.PsiElement
+import dev.ide.lang.incremental.DocumentSnapshot
+import dev.ide.lang.kotlin.symbols.SourceIndexBuilder
 import org.jetbrains.kotlin.kdoc.psi.api.KDoc
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.psi.KtBinaryExpression
@@ -129,7 +131,7 @@ class KotlinCompletion(
     }
 
     private fun completeInner(
-        document: dev.ide.lang.incremental.DocumentSnapshot, requestedOffset: Int
+        document: DocumentSnapshot, requestedOffset: Int
     ): CompletionResult {
         KotlinPerf.span("onBefore") { onBeforeComplete() }
         val original = document.text.toString()
@@ -162,7 +164,7 @@ class KotlinCompletion(
         // (a no-op when already synced); the marker sits at the caret, leaving referenced declarations intact.
         runCatching {
             service.syncFocal(document.file.path, original.hashCode()) {
-                dev.ide.lang.kotlin.symbols.SourceIndexBuilder.extractFrom(
+                SourceIndexBuilder.extractFrom(
                     kt, parsed, document.file.path
                 )
             }
@@ -282,7 +284,8 @@ class KotlinCompletion(
                 followingChar,
                 it.relevance(),
                 infix = pos.infixInsert,
-                callableRef = callableRef
+                callableRef = callableRef,
+                bareCallable = pos.bareCallable,
             )
         }
 
@@ -367,6 +370,10 @@ class KotlinCompletion(
          *  through its qualifier, so it needs NO auto-import (unlike a bare type-reference or a top-level
          *  extension, which do). Gates the import-edit computation below. */
         val memberAccess: Boolean = false,
+        /** The completion is a segment of an `import`/`package` directive, so a callable candidate is inserted as
+         *  its BARE name (`import a.b.map`), never the call form `map()` — unlike a fully-qualified call in code
+         *  (`a.b.map(...)`), where the parens are wanted. */
+        val bareCallable: Boolean = false,
     )
 
     private fun classifyPosition(
@@ -411,6 +418,8 @@ class KotlinCompletion(
         callableRef: Boolean = false
     ): PositionResult {
         val prefix = matcher.prefix
+        // Classes the caret sits inside — a private member of one of them is accessible via `.`.
+        val enclosing = enclosingClasses(receiver)
         // A bare type-parameter receiver (`t.` where `t: T`, `<T : Bound>`) completes against the parameter's
         // upper bound; a normal type is unchanged, an unbounded parameter drops to the package/empty path.
         val recvType = KotlinPerf.span("infer") {
@@ -421,7 +430,7 @@ class KotlinCompletion(
             val typeReceiver = resolver.isTypeReceiver(receiver)
             val members = KotlinPerf.span("members") {
                 service.membersForCompletion(recvType.qualifiedName, recvType.typeArguments, prefix)
-            }.filter { callableRef || memberVisibleOn(it, typeReceiver) }
+            }.filter { callableRef || memberVisibleOn(it, typeReceiver, enclosing) }
             // A bare `Type.` where the type has a companion object resolves to the companion instance, so the
             // companion's own members (Compose's `Color.Black`/`White`) and the extensions applicable to it
             // (`Modifier.Companion : Modifier` → `Modifier.padding`/`background`) are in scope too
@@ -440,7 +449,7 @@ class KotlinCompletion(
                 val nestedTypes = service.nestedTypesOf(recvType.qualifiedName, prefix)
                 members + nestedTypes + enumConstants + listOfNotNull(companion) + service.companionMembersFor(
                     recvType.qualifiedName, prefix
-                ).filter { memberVisibleOn(it, typeReceiver = false) }
+                ).filter { memberVisibleOn(it, typeReceiver = false, enclosing) }
             } else {
                 // Member-extensions in scope on an instance receiver (`map.printMap()` where `printMap` is a
                 // `Map<…>` extension declared in the enclosing class, `Modifier.weight` inside a `Row { }`).
@@ -449,10 +458,12 @@ class KotlinCompletion(
             return PositionResult(raw, memberAccess = true)
         }
         // Receiver is a package/FQN prefix (`java.util.`, `android.`) — complete its sub-packages + the types in
-        // it (inserted fully-qualified, so it needs no auto-import).
+        // it (inserted fully-qualified, so it needs no auto-import). Inside an `import`/`package` directive a
+        // callable candidate inserts its bare name (`import a.b.map`), not the `map()` call form.
         val pkg = packagePathOf(receiver)
+        val inImportOrPackage = climbTo<KtImportDirective>(receiver) != null || climbTo<KtPackageDirective>(receiver) != null
         return if (pkg != null) PositionResult(
-            service.packageMembers(pkg, prefix), packageCompletion = true
+            service.packageMembers(pkg, prefix), packageCompletion = true, bareCallable = inImportOrPackage
         )
         else PositionResult(emptyList())
     }
@@ -1059,13 +1070,37 @@ class KotlinCompletion(
 
     // --- position predicates / leaf utilities ---
 
-    /** Instance receiver → non-static members (+ extensions); type receiver → statics + nested types. */
-    private fun memberVisibleOn(s: KotlinSymbol, typeReceiver: Boolean): Boolean {
+    /** Instance receiver → non-static members (+ extensions); type receiver → statics + nested types.
+     *  A `private` member is offered via `.` only when its declaring class is one the caret sits inside
+     *  ([enclosing]) — Kotlin allows private access within the class (`this.field`, another instance of that
+     *  class, and a nested/inner class reaching an enclosing class's privates), so completing inside the class
+     *  must surface its privates while a `.` from outside still hides them. */
+    private fun memberVisibleOn(s: KotlinSymbol, typeReceiver: Boolean, enclosing: EnclosingClasses): Boolean {
         if (s.kind == SymbolKind.CONSTRUCTOR) return false // never reached via `.`
-        if (Modifier.PRIVATE in s.modifiers) return false // private members aren't accessible via an explicit `.`
+        if (Modifier.PRIVATE in s.modifiers && !enclosing.declares(s)) return false
         if (s.isInternal && !s.origin.fromSource) return false // a library's `internal` isn't accessible cross-module
         val isStatic = Modifier.STATIC in s.modifiers
         return if (typeReceiver) isStatic || s.kind in TYPE_KINDS else !isStatic
+    }
+
+    /** The classes/objects [anchor] is lexically nested inside — the scope in which a `private` member is
+     *  accessible via `.`. Captured by FQN (a binary member carries [KotlinSymbol.declaringClassFqn]) AND by
+     *  simple name (a SOURCE member carries only a simple owner name — its `declaringClassFqn` is null), so
+     *  [EnclosingClasses.declares] matches either. Anonymous objects (no name) drop out. */
+    private fun enclosingClasses(anchor: PsiElement): EnclosingClasses {
+        val fqns = HashSet<String>()
+        val simpleNames = HashSet<String>()
+        generateSequence(anchor as PsiElement?) { it.parent }.filterIsInstance<KtClassOrObject>().forEach { c ->
+            c.fqName?.asString()?.let { fqns += it }
+            c.name?.let { simpleNames += it }
+        }
+        return EnclosingClasses(fqns, simpleNames)
+    }
+
+    /** Enclosing-class identity used to gate private-member visibility (see [memberVisibleOn]/[enclosingClasses]). */
+    private class EnclosingClasses(val fqns: Set<String>, val simpleNames: Set<String>) {
+        /** Whether [s]'s declaring class is one the caret is inside — matched by FQN (binary) or simple name (source). */
+        fun declares(s: KotlinSymbol): Boolean = s.declaringClassFqn in fqns || s.owner?.name in simpleNames
     }
 
     /** Inside the literal text of a string (suppress completion), but NOT inside a `${ }`/`$name` entry. */

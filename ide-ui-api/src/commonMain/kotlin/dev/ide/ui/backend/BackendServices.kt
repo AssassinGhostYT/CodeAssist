@@ -147,6 +147,19 @@ interface EditorService {
     /** Go-to-definition for the symbol/reference at [offset], or null. */
     suspend fun definitionAt(path: String, text: String, offset: Int): UiDefinition? = null
 
+    /** Source go-to targets for the symbol at [offset] ([kind]: declaration / implementation / type / super).
+     *  0 → nothing found; 1 → navigate; >1 → the caller shows a picker. Kotlin source only for now. */
+    suspend fun navigationTargets(path: String, text: String, offset: Int, kind: UiNavKind): List<UiNavTarget> = emptyList()
+
+    /** The navigation actions APPLICABLE at [offset] (each with its resolved targets) — so the Go-to menu shows
+     *  only usable actions. Empty when nothing applies. Kotlin source only for now. */
+    suspend fun navigationOptions(path: String, text: String, offset: Int): List<UiNavOption> = emptyList()
+
+    /** The read-only content for a `library://<fqn>` target: attached source, else a decompiled view (full-body
+     *  Java, or a Kotlin declaration stub). [forceJava] runs the Java decompiler on any class ("Decompile to
+     *  Java"). Resolved against [contextPath]'s module classpath. Null when the class isn't found. */
+    suspend fun libraryContent(contextPath: String, fqn: String, forceJava: Boolean = false): UiLibraryContent? = null
+
     /** Gutter inheritor ("implementations") markers for [text] — one per inheritable type with direct subtypes.
      *  Empty for languages/files without the subtype relation indexed. */
     suspend fun inheritorMarkers(path: String, text: String): List<UiInheritorMarker> = emptyList()
@@ -172,6 +185,14 @@ interface EditorService {
 
 /** The projectional (block) editor projection + edit compilation. */
 interface BlockService {
+    /**
+     * Whether the block editor is available at all — false when the `blocks` plugin is disabled (no block
+     * mapping is registered). The shell reads this once to decide whether to offer the Blocks view-mode
+     * segment; when false the toggle omits it and a persisted `blocks` tab restores as plain text. Defaults to
+     * false so a backend that wires no block editor never shows the toggle.
+     */
+    fun blocksEnabled(): Boolean = false
+
     /** Project the live buffer [text] of [path] into a block tree, or null when unsupported. */
     suspend fun projectBlocks(path: String, text: String): UiBlockNode? = null
 
@@ -205,6 +226,13 @@ interface PreviewService {
     /** Run the `@Preview` composable [functionName] through the on-device interpreter. */
     suspend fun runComposePreview(path: String, text: String, functionName: String): UiPreviewResult =
         UiPreviewResult(ok = false, message = "Compose preview is not available")
+
+    /** Whether [path]'s module can resolve library composables yet (the workspace index has finished building).
+     *  The preview pane gates rendering on this: interpreting a preview while the index is still building resolves
+     *  library calls (e.g. material3's `lightColorScheme`) to zero candidates and would latch a permanent
+     *  "unresolved call" failure that never self-heals. Defaults to true so stub/non-indexing backends render
+     *  immediately (unchanged behavior). */
+    suspend fun composePreviewReady(path: String): Boolean = true
 
     // ---- Real-view layout attribute editor ----
     // Backs the Preview's editable attribute sheet: it edits the layout XML source (the same buffer the Code
@@ -366,6 +394,14 @@ interface DependencyService {
 
     /** Published versions of the declared library [coordinate]'s artifact, newest-first (the version picker). */
     suspend fun availableVersions(moduleName: String, coordinate: String): List<String> = emptyList()
+
+    /** Versions of the library [group]:[name] currently downloaded to the shared cache, each with its size
+     *  on disk (newest-first) — the Dependencies editor's downloaded-versions cleanup list. */
+    suspend fun cachedVersions(group: String, name: String): List<UiCachedVersion> = emptyList()
+
+    /** Delete the cached [version] of [group]:[name] from the shared download store to reclaim disk; a later
+     *  build re-downloads it if needed. Returns true when the version was present. */
+    suspend fun deleteCachedVersion(group: String, name: String, version: String): Boolean = false
 
     /** Update a declared library [coordinate] — change its version/scope/exclusions in one re-resolve. */
     suspend fun updateDependency(moduleName: String, coordinate: String, version: String, scope: String, exclusions: List<String>): UiAddResult =
@@ -553,6 +589,20 @@ interface ProjectService {
     /** Back up the user's projects into a single `.zip`, returning its path, or null. */
     suspend fun backupProjects(): String? = null
 
+    /**
+     * A breakdown of what's using disk under the app storage root — total plus per-category sizes and
+     * per-project sizes — for the Storage screen's usage graph. Walks the managed storage, so it suspends
+     * off the main thread. Null when the backend has no project manager.
+     */
+    suspend fun storageReport(): UiStorageReport? = null
+
+    /**
+     * Delete the regenerable storage the category [id] owns (see [UiStorageCategory.id]) — caches, or the
+     * app-owned SDK/toolchain dirs. A no-op returning false for a read-only category (project source, other
+     * files) or an unknown id; never removes source, config, or keystores. Suspends off the main thread.
+     */
+    suspend fun clearStorageCategory(id: String): Boolean = false
+
     /** The editor tabs open the last time the active project was used. */
     fun openTabs(): UiOpenTabs = UiOpenTabs()
 
@@ -600,6 +650,42 @@ interface ProjectService {
     suspend fun importPackage(archivePath: String): UiProjectResult =
         UiProjectResult(false, "Project import not supported by this backend")
 }
+
+/**
+ * The Storage screen's usage report: a total plus per-category and per-project sizes, all in bytes so the
+ * UI can draw proportional segments and format the numbers itself. Titles/descriptions are NOT carried here
+ * — the UI resolves them (and each category's color) from [UiStorageCategory.id], keeping user-facing text
+ * in the localized resource bundle. [openProjectRootPath] is the currently-open project (so the screen can
+ * refuse to delete it), or null when none is open.
+ */
+data class UiStorageReport(
+    val storageRootPath: String,
+    val totalBytes: Long,
+    val categories: List<UiStorageCategory>,
+    val projects: List<UiStorageProject>,
+    val openProjectRootPath: String?,
+)
+
+/**
+ * One slice of storage. [id] is a stable key (e.g. `"dependencies"`, `"sdk"`, `"projects"`) the UI maps to a
+ * title, description, and color. [clearable] shows a Clear action; [destructive] means it needs a
+ * confirmation first (the SDK/toolchain). Read-only categories (project source, other files) have both false.
+ */
+data class UiStorageCategory(
+    val id: String,
+    val bytes: Long,
+    val colorId: String,
+    val clearable: Boolean,
+    val destructive: Boolean,
+)
+
+/** One managed project in the Storage screen's delete list. [bytes] is the full size freed by deleting it. */
+data class UiStorageProject(
+    val name: String,
+    val rootPath: String,
+    val bytes: Long,
+    val isAndroid: Boolean,
+)
 
 // ---------------------------------------------------------------------------
 // Projects Store (the featured/searchable catalog of templates + sample projects)
@@ -891,6 +977,17 @@ interface AgentService {
 
     /** Configure the custom OpenAI-compatible gateway (base URL + model name). */
     fun setGateway(baseUrl: String, model: String)
+
+    /** Live status of the experimental Antigravity "Sign in with Google" (OAuth PKCE) flow. */
+    val antigravitySignIn: StateFlow<UiAntigravitySignIn>
+        get() = kotlinx.coroutines.flow.MutableStateFlow(UiAntigravitySignIn())
+
+    /** Start the Antigravity Google sign-in. Surfaces the consent URL via [antigravitySignIn].authUrl for the
+     *  UI to open in a browser; on the redirect back, stores the minted OAuth token as the antigravity key. */
+    fun signInAntigravity() {}
+
+    /** Cancel an in-flight Antigravity sign-in. */
+    fun cancelAntigravitySignIn() {}
 
     /** Send a user message; streams the agent's response into [chatState]. */
     fun send(text: String)

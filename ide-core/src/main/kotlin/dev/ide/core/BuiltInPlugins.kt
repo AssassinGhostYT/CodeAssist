@@ -65,12 +65,17 @@ import dev.ide.lang.kotlin.index.BinarySubtypeIndex
 import dev.ide.lang.kotlin.index.KotlinBuiltinCallableIndex
 import dev.ide.lang.kotlin.index.KotlinBuiltinsIndex
 import dev.ide.lang.kotlin.index.KotlinCallableIndex
+import dev.ide.lang.kotlin.index.KotlinClassNamesIndex
 import dev.ide.lang.kotlin.index.KotlinMainIndex
+import dev.ide.lang.kotlin.index.KotlinMembersIndex
 import dev.ide.lang.kotlin.index.KotlinPackageDeclIndex
+import dev.ide.lang.kotlin.index.KotlinPackageTypesIndex
+import dev.ide.lang.kotlin.index.KotlinPackagesIndex
 import dev.ide.lang.kotlin.index.KotlinSourceAnnotationIndex
 import dev.ide.lang.kotlin.index.KotlinSourceCallableIndex
 import dev.ide.lang.kotlin.index.KotlinSourceDocIndex
 import dev.ide.lang.kotlin.index.KotlinSourceSubtypeIndex
+import dev.ide.lang.kotlin.index.KotlinSourceSymbolsIndex
 import dev.ide.lang.kotlin.index.KotlinTypeShapeIndex
 import dev.ide.lang.kotlin.synthetic.KotlinSyntheticClassProvider
 import dev.ide.lang.postfix.POSTFIX_TEMPLATE_EP
@@ -85,9 +90,18 @@ import dev.ide.model.impl.ProjectTemplateRegistry
 import dev.ide.model.module
 import dev.ide.platform.ServiceScopeLevel
 import dev.ide.plugin.Plugin
+import dev.ide.build.SOURCE_GENERATOR_EP
+import dev.ide.ksp.DefaultKspProcessorLoader
+import dev.ide.ksp.KspProcessorCatalog
+import dev.ide.ksp.KspProcessorLoader
+import dev.ide.ksp.KspSourceGenerator
 import dev.ide.plugin.PluginManifest
 import dev.ide.plugin.PluginRegistration
+import java.nio.file.Files
+import java.nio.file.Paths
 import dev.ide.plugin.impl.ActionManager
+import dev.ide.agent.ui.AgentUiPlugin
+import dev.ide.ui.ext.UiPlugin
 
 /**
  * The IDE's own built-in plugins and the ordered set the [ApplicationEnvironment] loads.
@@ -106,27 +120,39 @@ import dev.ide.plugin.impl.ActionManager
  * resource host, the app-compat action, the command actions) take [ApplicationEnvironment] and read
  * `env.activeEngine` lazily at callback time — never during `register`.
  */
+/**
+ * One built-in feature's UNIFIED registration: its engine [Plugin] (the identity — manifest/id/enabled state
+ * live here) paired with an OPTIONAL Compose [UiPlugin] facet. The two facets can't be one object (platform-core
+ * vs Compose worlds; a `@Composable` body can't live in the engine module), so a feature co-declares them here
+ * in one entry. [ApplicationEnvironment] loads the engine facet into the plugin manager and exposes the UI facet
+ * of ENABLED plugins to the shell — so disabling the plugin drops BOTH halves through the one decision.
+ */
+class BuiltInPlugin(val engine: Plugin, val ui: UiPlugin? = null)
+
 object BuiltInPlugins {
-    fun assemble(env: ApplicationEnvironment, codecs: FacetCodecRegistry): List<Plugin> = listOf(
-        PlatformPlugin(),
-        JdtLanguagePlugin(),
-        JavaPsiLanguagePlugin(),
-        XmlLanguagePlugin(),
-        KotlinLanguagePlugin(),
-        JavaSupportPlugin(),
-        KotlinSupportPlugin(),
-        AndroidSupportPlugin(env, codecs),
-        SamplesPlugin(),
-        CompletionBuiltinsPlugin(env),
-        IndexingPlugin(),
-        JdtAnalysisPlugin(),
-        JavaPsiAnalysisPlugin(),
-        KotlinAnalysisPlugin(),
-        XmlAnalysisPlugin(env),
-        AndroidXmlPlugin(env),
-        IdeCoreServicesPlugin(),
-        IdeCoreActionsPlugin(env),
-        AgentPlugin(),
+    fun assemble(env: ApplicationEnvironment, codecs: FacetCodecRegistry): List<BuiltInPlugin> = listOf(
+        BuiltInPlugin(PlatformPlugin()),
+        BuiltInPlugin(JdtLanguagePlugin()),
+        BuiltInPlugin(JavaPsiLanguagePlugin()),
+        BuiltInPlugin(XmlLanguagePlugin()),
+        BuiltInPlugin(KotlinLanguagePlugin()),
+        BuiltInPlugin(JavaSupportPlugin()),
+        BuiltInPlugin(KotlinSupportPlugin()),
+        BuiltInPlugin(KspSupportPlugin(env)),
+        BuiltInPlugin(BlocksPlugin()),
+        BuiltInPlugin(AndroidSupportPlugin(env, codecs)),
+        BuiltInPlugin(SamplesPlugin()),
+        BuiltInPlugin(CompletionBuiltinsPlugin(env)),
+        BuiltInPlugin(IndexingPlugin()),
+        BuiltInPlugin(JdtAnalysisPlugin()),
+        BuiltInPlugin(JavaPsiAnalysisPlugin()),
+        BuiltInPlugin(KotlinAnalysisPlugin()),
+        BuiltInPlugin(XmlAnalysisPlugin(env)),
+        BuiltInPlugin(AndroidXmlPlugin(env)),
+        BuiltInPlugin(IdeCoreServicesPlugin()),
+        BuiltInPlugin(IdeCoreActionsPlugin(env)),
+        // The AI agent: engine facet (settings page + AgentBackend wiring) + its Compose chat UI, one entry.
+        BuiltInPlugin(AgentPlugin(), ui = AgentUiPlugin),
     )
 }
 
@@ -231,11 +257,11 @@ private class KotlinLanguagePlugin : Plugin {
     }
 }
 
-/** Java support: the java-library module type, Java Create-Project templates, and the block decomposition. */
+/** Java support: the java-library module type and the Java Create-Project templates. */
 private class JavaSupportPlugin : Plugin {
     override val manifest = PluginManifest(
         id = "java-support", name = "Java Support",
-        description = "Java-library module type, Java Create-Project templates, and block-editor decomposition.",
+        description = "Java-library module type and Java Create-Project templates.",
     )
     override fun register(reg: PluginRegistration) {
         reg.contributeVia { ext, pid ->
@@ -244,6 +270,23 @@ private class JavaSupportPlugin : Plugin {
             templates.register(JavaConsoleAppTemplate, pid)
             templates.register(JavaLibraryTemplate, pid)
         }
+    }
+}
+
+/**
+ * The projectional (block) editor: contributes the Java block decomposition ([JavaBlockMapping]) onto
+ * [BLOCK_MAPPING_EP], the one thing that makes the Code/Blocks toggle do anything. Non-essential — disabling
+ * it drops the only block mapping, so the engine's [dev.ide.core.services.BlockService] reports no mappings and
+ * the UI hides the Blocks view-mode segment (the whole feature turns off through this one decision). The
+ * generic projection plumbing (the WORKSPACE-scoped `BlockService`) stays in [IdeCoreServicesPlugin]; with no
+ * mapping registered it is simply inert.
+ */
+private class BlocksPlugin : Plugin {
+    override val manifest = PluginManifest(
+        id = "blocks", name = "Block Editor",
+        description = "The projectional block editor — a Scratch-style visual view of the same code, toggled per file.",
+    )
+    override fun register(reg: PluginRegistration) {
         reg.register(BLOCK_MAPPING_EP, JavaBlockMapping)
     }
 }
@@ -272,6 +315,48 @@ private class KotlinSupportPlugin : Plugin {
             templates.register(KotlinConsoleAppTemplate, pid)
             templates.register(KotlinLibraryTemplate, pid)
         }
+    }
+}
+
+/**
+ * KSP2 source generation: contributes [KspSourceGenerator] on [SOURCE_GENERATOR_EP], so the build's
+ * `generateSources` tasks run the IDE's **bundled** KSP2 processors (Room, …) on the IDE's OWN compiler/AA
+ * (the ~776 KB thin runner + the bundled processor jars — nothing 78 MB or downloaded, so it stays within
+ * Play's dynamic-code-loading policy). Activation is probe-based, exactly like the Compose/serialization
+ * plugins: a module that carries a processor's runtime (e.g. `room-runtime`) trips [KspProcessorCatalog] and
+ * the processor runs — no per-module toggle. The generated `.kt`/`.java` land in the module's
+ * `ContentRole.GENERATED` root and compile + index like hand-written code.
+ *
+ * The processor classloader is the injected [KOTLIN_PLUGIN_LOADER] (a plain `URLClassLoader` on desktop, a
+ * `DexClassLoader` over bundled dex on ART) — its parent is the app classloader, which carries our compiler/AA
+ * + `symbol-processing-api`, so the thin runner + processors resolve those parent-first. `jdkHome` is a real
+ * JDK on desktop and null on ART (where android.jar on the module's compile classpath supplies `java.*`).
+ */
+private class KspSupportPlugin(private val env: ApplicationEnvironment) : Plugin {
+    override val manifest = PluginManifest(
+        id = "ksp-support", name = "KSP Source Generation",
+        description = "Runs bundled KSP2 processors (Room, …) at build time on the IDE's own compiler; generated sources compile + index like hand-written code.",
+    )
+
+    override fun register(reg: PluginRegistration) {
+        val catalog = KspProcessorCatalog.bundled()
+        // Reuse the injected Kotlin-plugin loader; read lazily (it may be registered after assemble()), falling
+        // back to the desktop URLClassLoader when no host loader is wired.
+        val loader = KspProcessorLoader { cp ->
+            env.container.getServiceOrNull(KOTLIN_PLUGIN_LOADER)?.load(cp) ?: DefaultKspProcessorLoader.load(cp)
+        }
+        // A real modular JDK (desktop) exposes lib/jrt-fs.jar; ART's java.home does not — there KSP resolves
+        // java.* from android.jar on the module's compile classpath instead, so jdkHome stays null.
+        val jdkHome = System.getProperty("java.home")?.let { Paths.get(it) }
+            ?.takeIf { Files.exists(it.resolve("lib/jrt-fs.jar")) }
+        reg.register(
+            SOURCE_GENERATOR_EP,
+            KspSourceGenerator(
+                processors = { req -> catalog.classpathFor(req.classpath) },
+                loader = loader,
+                jdkHome = jdkHome,
+            ),
+        )
     }
 }
 
@@ -367,6 +452,11 @@ private class IndexingPlugin : Plugin {
             JavaSourceSymbolsIndex,
             JavaMembersIndex,
             JavaMembersByOwnerIndex,
+            KotlinClassNamesIndex,
+            KotlinPackagesIndex,
+            KotlinPackageTypesIndex,
+            KotlinSourceSymbolsIndex,
+            KotlinMembersIndex,
             KotlinTypeShapeIndex,
             KotlinBuiltinsIndex,
             KotlinCallableIndex,

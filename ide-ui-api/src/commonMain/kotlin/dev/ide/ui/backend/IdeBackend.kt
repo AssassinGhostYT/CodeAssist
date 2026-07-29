@@ -70,6 +70,14 @@ interface IdeBackend {
 
     /** The AI coding agent (chat + tool use). Optional — a backend that wires none inherits [AgentService.Unsupported]. */
     val agent: AgentService get() = AgentService.Unsupported
+
+    /**
+     * The Compose UI facets (tool windows, actions, screens) contributed by the currently-ENABLED plugins. The
+     * shell registers these into `UiPluginHost` at startup — a plugin's UI is thus governed by the same
+     * enable/disable decision as its engine half, so a disabled plugin contributes no UI. Empty by default (a
+     * backend that wires no plugins).
+     */
+    fun uiPlugins(): List<dev.ide.ui.ext.UiPlugin> = emptyList()
 }
 
 // ---- logging DTOs ----
@@ -501,6 +509,10 @@ data class UiDependencyNode(
 /** A resolved version clash: [artifact] (`group:name`) was requested at [requested]; [chosen] won. */
 data class UiVersionConflict(val artifact: String, val requested: List<String>, val chosen: String)
 
+/** One downloaded/cached version of a library artifact and the disk space [bytes] it occupies. Backs the
+ *  Dependencies editor's "downloaded versions" list, where old ones can be deleted to reclaim storage. */
+data class UiCachedVersion(val version: String, val bytes: Long)
+
 /** Everything the Dependencies screen renders for one module. */
 data class UiModuleDeps(
     val moduleName: String,
@@ -695,6 +707,16 @@ data class UiAgentConfig(
 data class UiAgentPermissionRequest(val id: Int, val tool: String, val summary: String, val path: String?)
 
 enum class UiAgentPermissionDecision { DENY, ALLOW_ONCE, ALLOW_SESSION }
+
+enum class UiAntigravitySignInStatus { IDLE, WAITING, SUCCESS, ERROR }
+
+/** Live state of the Antigravity "Sign in with Google" (OAuth PKCE loopback) flow. [authUrl] is set once,
+ *  when the consent page is ready for the UI to open in a browser; [message] carries the error text on ERROR. */
+data class UiAntigravitySignIn(
+    val status: UiAntigravitySignInStatus = UiAntigravitySignInStatus.IDLE,
+    val authUrl: String? = null,
+    val message: String? = null,
+)
 
 /**
  * An unexpected error surfaced as a non-fatal dialog (IntelliJ "Internal Error" style). [title] is a short
@@ -1257,6 +1279,22 @@ data class UiLayoutElement(
 
 /** A go-to-definition target: open [path] and move the caret to [offset]. */
 data class UiDefinition(val path: String, val offset: Int)
+
+/** The source navigation actions the editor offers (Kotlin sources for now). */
+enum class UiNavKind { DECLARATION, IMPLEMENTATION, TYPE_DECLARATION, SUPER }
+
+/** One navigation destination: open [path] at [offset]. [label] names it in the multi-target picker and
+ *  [kind] (a lowercase symbol/declaration kind, e.g. "class"/"method") picks its icon. */
+data class UiNavTarget(val path: String, val offset: Int, val label: String, val kind: String)
+
+/** A navigation action that's APPLICABLE at the caret: its [kind] plus the source [targets] it resolves to
+ *  (precomputed, so the Go-to menu shows only usable actions and a pick is instant). */
+data class UiNavOption(val kind: UiNavKind, val targets: List<UiNavTarget>)
+
+/** The read-only display of a compiled LIBRARY class: [path] is the synthetic tab path (`library://<fqn>`,
+ *  the host opens it read-only), [name] the file/tab name (`Foo.kt`/`Foo.java`), [text] the content, and
+ *  [kind] one of `"source"`/`"decompiled_java"`/`"decompiled_kotlin"` (drives the banner + syntax language). */
+data class UiLibraryContent(val path: String, val name: String, val text: String, val kind: String)
 
 /** A gutter "implementations / is subclassed" marker: [offset] anchors the type declaration's name;
  *  [targets] are its direct inheritors. [isInterface] picks the glyph (implemented vs subclassed). */

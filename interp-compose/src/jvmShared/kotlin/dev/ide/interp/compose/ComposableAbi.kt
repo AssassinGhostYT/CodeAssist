@@ -53,11 +53,23 @@ object ComposableAbi {
     }
 
     /** Whether a JVM method name corresponds to the Kotlin function [kotlinName]. Kotlin MANGLES the JVM name
-     *  of any function that takes/returns an inline value class (Compose's `Text` has `Color`/`TextUnit`
-     *  params) to `name-<hash>` for binary-compat — so the literal name won't match; the prefix does. The hash
-     *  never contains `$`, so excluding `$` skips sibling synthetics (`…$annotations`, `…$default`). */
-    private fun nameMatches(jvmName: String, kotlinName: String): Boolean =
-        jvmName == kotlinName || (jvmName.startsWith("$kotlinName-") && '$' !in jvmName)
+     *  two ways this must see through (kept in sync with interp-core's `mangledNameMatches`):
+     *   - a function taking/returning an inline value class (Compose's `Text` has `Color`/`TextUnit` params) →
+     *     `name-<hash>`; the hash never contains `$`, so excluding `$` skips sibling synthetics
+     *     (`…$annotations`, `…$default`);
+     *   - an `internal` function → `name$<module>` (much of Material3 Expressive is internal, e.g.
+     *     `MotionScheme.Companion.expressive()` → `expressive$material3`), optionally on top of the value-class
+     *     form. The module suffix must be a single segment and not a known compiler synthetic. */
+    private fun nameMatches(jvmName: String, kotlinName: String): Boolean {
+        if (jvmName == kotlinName) return true
+        if (jvmName.startsWith("$kotlinName-") && '$' !in jvmName) return true
+        val dollar = jvmName.indexOf('$')
+        if (dollar <= 0) return false
+        val base = jvmName.substring(0, dollar)
+        val suffix = jvmName.substring(dollar + 1)
+        val baseMatches = base == kotlinName || base.startsWith("$kotlinName-")
+        return baseMatches && '$' !in suffix && suffix != "default" && suffix != "annotations"
+    }
 
     /** A `Composer` parameter — matched by simple name as a fallback too, in case a relocated/shaded build
      *  reports a package-qualified name we don't expect (we still want to detect the composer slot). */
@@ -427,11 +439,13 @@ object ComposableAbi {
                 // slot → `materializeModifier` calls `.all(…)` on the proxy, which returns null → NPE (`Box.kt`).
                 is InterpretedLambda -> if (!isFunctionalInterface(p)) return false
                 null -> if (p.isPrimitive) return false
-                // A boxed value-class parameter (`TextAlign?`) accepts the unboxed underlying value too.
-                else -> if (!boxed(p).isInstance(a) && !acceptsValueClassUnderlying(
-                        p,
-                        a
-                    )
+                // A boxed value-class parameter (`TextAlign?`) accepts the unboxed underlying value; and the
+                // inverse — a mangled unboxed-underlying param (`color: Color` → `long`) accepts a BOXED
+                // value-class arg (a `State<Color>.value` / `animateColorAsState` read), which the slot bind then
+                // unboxes. Without the inverse, a composable with a value-class param fed a boxed value has the
+                // right overload wrongly rejected here — masked for a lone overload, mis-selected among siblings.
+                else -> if (!boxed(p).isInstance(a) && !acceptsValueClassUnderlying(p, a) &&
+                    !acceptsBoxedValueClassUnboxed(p, a)
                 ) return false
             }
         }
@@ -493,6 +507,13 @@ object ComposableAbi {
         } ?: return false
         return boxed(box.parameterTypes[0]).isInstance(value)
     }
+
+    /** The inverse of [acceptsValueClassUnderlying]: whether [value] is a BOXED inline value-class instance
+     *  (`State<Color>.value` / `animateColorAsState` hand one back — an `Object`-typed getter) whose unboxed
+     *  underlying fits a mangled unboxed-underlying [paramType]. Delegates to [unboxToUnderlying] so overload
+     *  SELECTION admits exactly the args the slot bind ([boxValueClassIfNeeded]) then unboxes. */
+    private fun acceptsBoxedValueClassUnboxed(paramType: Class<*>, value: Any?): Boolean =
+        value != null && value !is InterpretedLambda && unboxToUnderlying(value, paramType) != null
 
     private fun boxed(c: Class<*>): Class<*> = when (c) {
         Int::class.javaPrimitiveType -> Integer::class.java

@@ -87,6 +87,8 @@ import dev.ide.index.IndexService
 import dev.ide.index.impl.IndexServiceImpl
 import dev.ide.lang.AnalysisResult
 import dev.ide.lang.FILE_TYPE_EP
+import dev.ide.decompiler.Decompiler
+import dev.ide.decompiler.LibrarySources
 import dev.ide.lang.FileTypeMapping
 import dev.ide.lang.LANGUAGE_BACKEND_EP
 import dev.ide.lang.JvmIndexScopeProvider
@@ -301,6 +303,14 @@ interface ApkInstaller {
 
 /** The status of running a Compose `@Preview` through the interpreter: [ok] = interpretable/rendered. */
 data class PreviewRunResult(val ok: Boolean, val message: String)
+
+/** How a library class's [LibraryContent] text was obtained. */
+enum class LibraryContentKind { SOURCE, DECOMPILED_JAVA, DECOMPILED_KOTLIN }
+
+/** The read-only display of a compiled library class [fqn]: its attached SOURCE if present, else a DECOMPILED
+ *  view (full-body Java via Vineflower, or a declaration Kotlin stub). [name] is the tab/file name (`Foo.kt` /
+ *  `Foo.java`); [kind] drives the read-only banner + syntax language. */
+data class LibraryContent(val fqn: String, val name: String, val text: String, val kind: LibraryContentKind)
 
 /** A lowered `@Preview` ready to render: the preview function + the file's program for its source calls, plus
  *  the file's source classes/objects/enums (which the interpreter materializes — they aren't compiled). When
@@ -2147,6 +2157,88 @@ class IdeServices private constructor(
      *  modules). Null when [fqn] is classpath-only — no navigable project source. */
     fun implementationLocation(contextFile: Path, fqn: String): Pair<Path, Int>? =
         kotlinEditor.implementationLocation(contextFile, fqn)
+
+    /**
+     * Source go-to targets for the symbol at [offset] in [file]'s live buffer ([text]), for the requested
+     * navigation [kind] — Declaration / Implementation(s) / Type Declaration / Super. Kotlin source only;
+     * a [dev.ide.lang.kotlin.NavKind.DECLARATION] that resolves no code symbol falls back to the Android
+     * resource reference under the caret (so ⌘B still jumps `@string/…` / `R.…`). Empty when nothing applies.
+     */
+    fun navigationTargets(
+        file: Path,
+        text: String,
+        offset: Int,
+        kind: dev.ide.lang.kotlin.NavKind,
+    ): List<dev.ide.lang.kotlin.NavTarget> {
+        val targets = kotlinEditor.navigationTargets(file, text, offset, kind)
+        if (targets.isNotEmpty() || kind != dev.ide.lang.kotlin.NavKind.DECLARATION) return targets
+        return resourceDeclaration(file, text, offset) ?: emptyList()
+    }
+
+    /**
+     * The navigation actions applicable at [offset] in [file]'s buffer — each with its precomputed source
+     * targets — so the Go-to menu shows only what's usable. Declaration also covers an Android resource
+     * reference (`@type/name` / `R.type.name`) when no code symbol resolves. In [dev.ide.lang.kotlin.NavKind]
+     * order. Empty when nothing applies.
+     */
+    fun navigationOptions(
+        file: Path,
+        text: String,
+        offset: Int,
+    ): List<Pair<dev.ide.lang.kotlin.NavKind, List<dev.ide.lang.kotlin.NavTarget>>> {
+        val opts = kotlinEditor.navigationOptions(file, text, offset).toMutableList()
+        if (opts.none { it.first == dev.ide.lang.kotlin.NavKind.DECLARATION }) {
+            resourceDeclaration(file, text, offset)?.let { opts.add(dev.ide.lang.kotlin.NavKind.DECLARATION to it) }
+        }
+        return opts.sortedBy { it.first.ordinal }
+    }
+
+    /**
+     * The read-only display for a compiled library class [fqn], resolved against [contextFile]'s module: its
+     * ATTACHED SOURCE if present (`-sources.jar` / JDK `src.zip` / Android `sources/`), else a DECOMPILED view.
+     * `forceJava` (the "Decompile to Java" action) always runs the Vineflower Java decompiler; otherwise the
+     * natural language is used — a Kotlin class (`@kotlin.Metadata`) renders a declaration stub, a Java class
+     * decompiles full-body. Blocking (reads jars, runs the decompiler); the backend hops to IO. Null when the
+     * class isn't on the module classpath or the decompiler fails outright.
+     */
+    fun libraryContent(contextFile: Path, fqn: String, forceJava: Boolean): LibraryContent? {
+        val module = moduleForFile(contextFile) ?: modules().firstOrNull() ?: return null
+        // Search across EVERY module's classpath (+ each boot classpath + the bundled Kotlin stdlib), so a
+        // library class resolves regardless of which module the caret's file belongs to — and so re-decompiling
+        // from within a library tab (which has no real module context) still finds the class. [locate] scans
+        // lazily and stops at the first hit, so a wider list only costs a jar open on a miss.
+        val providers = modules().mapNotNull { analyzerFor(it) as? JvmIndexScopeProvider }
+        val classpath = (providers.flatMap { it.classpathJarPaths } +
+            modules().flatMap { bootClasspathFor(it) } + compileBootClasspath +
+            listOfNotNull(BundledKotlinStdlib.jar())).distinct()
+        val decompiler = Decompiler(classpath)
+        val simple = fqn.substringAfterLast('.')
+
+        fun java() = decompiler.javaSource(fqn)?.let { LibraryContent(fqn, "$simple.java", it, LibraryContentKind.DECOMPILED_JAVA) }
+        fun kotlin() = decompiler.kotlinStub(fqn)?.let { LibraryContent(fqn, "$simple.kt", it, LibraryContentKind.DECOMPILED_KOTLIN) }
+        // Kotlin BUILT-INS (List/Int/String — no `.class`) reconstruct from `.kotlin_builtins` via the module's
+        // Kotlin analyzer, since the bytecode decompiler has nothing to read.
+        fun builtin() = (analyzerFor(module, KotlinLanguageBackend.LANGUAGE_ID) as? KotlinSourceAnalyzer)
+            ?.builtinStub(fqn)?.let { LibraryContent(fqn, "$simple.kt", it, LibraryContentKind.DECOMPILED_KOTLIN) }
+
+        if (forceJava) return java() ?: builtin() ?: kotlin()
+
+        // Attached source first (real source text, read-only).
+        val archives = providers.flatMap { it.librarySourceArchives }.distinct()
+        val (sourceDirs, sourceJars) = archives.partition { Files.isDirectory(it) }
+        LibrarySources(sourceJars, sourceDirs).read(fqn)?.let { (name, text) ->
+            return LibraryContent(fqn, name, text, LibraryContentKind.SOURCE)
+        }
+        // Else decompile in the class's natural language (a built-in has no bytecode → the stub; fall back).
+        return if (decompiler.isKotlin(fqn)) kotlin() ?: builtin() ?: java()
+        else builtin() ?: java() ?: kotlin()
+    }
+
+    /** A single-element DECLARATION target list for the Android resource reference under [offset], or null. */
+    private fun resourceDeclaration(file: Path, text: String, offset: Int): List<dev.ide.lang.kotlin.NavTarget>? =
+        resources.definitionAt(file, text, offset)?.let { (p, o) ->
+            listOf(dev.ide.lang.kotlin.NavTarget(store.vfs.fileFor(p), o, p.fileName.toString(), "resource"))
+        }
 
     /**
      * Run the `@Preview` composable [functionName] in [file] (buffer [text]): lower the file, verify the

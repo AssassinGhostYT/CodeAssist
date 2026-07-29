@@ -46,9 +46,11 @@ import dev.ide.platform.log.Log
 import dev.ide.platform.log.LogLevel
 import dev.ide.platform.log.LogSink
 import dev.ide.preview.LayoutPreviewBackend
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -58,6 +60,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.nio.file.Paths
 
@@ -163,10 +166,20 @@ class IdeServicesBackend(
      *
      * Confining them to a single background thread keeps the serialization (one worker → never two
      * analyzer calls at once) while freeing the UI thread, so typing stays smooth no matter how slow a
-     * given analysis is. `limitedParallelism(1)` borrows one worker from the shared Default pool (no
-     * dedicated thread to close).
+     * given analysis is.
+     *
+     * This is a DEDICATED single thread, not `Dispatchers.Default.limitedParallelism(1)`. The latter
+     * serializes (mutual exclusion) but HOPS between the shared pool's physical workers between calls, so the
+     * analyzer state is written on one thread and read on the next — correctness then rests on the runtime
+     * honouring the dispatcher's cross-thread happens-before (memory barriers). On some 32-bit ARM ARTs (e.g.
+     * Unisoc SC9863A, issues #1396/#1332) that reliance produced a hard SIGSEGV (a torn reference read the
+     * runtime never turned into an NPE) on this worker during editing. A single pinned thread gives true
+     * single-thread confinement — what ecj/JDT expects, and immune to any weak-memory hand-off bug — for a
+     * thread that never closes for the life of the backend. Named so a future tombstone points straight here.
      */
-    override val engineDispatcher = Dispatchers.Default.limitedParallelism(1)
+    private val engineExecutor =
+        Executors.newSingleThreadExecutor { r -> Thread(r, "ide-engine").apply { isDaemon = true } }
+    override val engineDispatcher: CoroutineDispatcher = engineExecutor.asCoroutineDispatcher()
 
     /**
      * The priority scheduler the editor's engine calls run through (extracted to [EngineScheduler] so the
@@ -270,7 +283,17 @@ class IdeServicesBackend(
     override val sdk: SdkService = SdkBackend(this)
     override val settings: SettingsService = SettingsBackend(this)
     override val actions: ActionService = ActionBackend(this)
-    override val agent: dev.ide.ui.backend.AgentService = AgentBackend(this)
+    // The AI agent is a disablable, non-essential plugin ([AgentPlugin.ID]). When the user turns it off in
+    // Settings > Plugins the plugin isn't loaded, so we hand the UI the no-op service — the chat panel, the
+    // sparkle toggle, and the agent loop all disappear (the UI keys these surfaces off this being Unsupported).
+    // A manager-less backend (tests / single-project) has no catalog, so the agent stays wired.
+    override val agent: dev.ide.ui.backend.AgentService =
+        if (manager?.env?.pluginCatalog?.isEnabled(AgentPlugin.ID) != false) AgentBackend(this)
+        else dev.ide.ui.backend.AgentService.Unsupported
+
+    // The Compose UI facets of the enabled built-in plugins (see BuiltInPlugins). The shell registers them into
+    // UiPluginHost; a disabled plugin's facet isn't in this list, so its UI never appears. Empty with no manager.
+    override fun uiPlugins(): List<dev.ide.ui.ext.UiPlugin> = manager?.env?.enabledUiPlugins ?: emptyList()
     override val diagnostics: DiagnosticsService = DiagnosticsBackend(this)
 
     init {
@@ -512,6 +535,7 @@ class IdeServicesBackend(
         runCatching { analytics.flush() }
         runCatching { analytics.close() }
         activeServices?.close()
+        runCatching { engineExecutor.shutdown() } // stop the dedicated ide-engine thread on teardown
     }
 
     private companion object {

@@ -357,10 +357,14 @@ We never collect your code, file or project names, which features you use, or an
     <string name="sources_download">Download</string>
     <string name="sources_downloading">Downloading…</string>
     <string name="sources_download_failed">Download failed: %1$s</string>
+    <string name="library_readonly_source">Library source · read-only</string>
+    <string name="library_readonly_decompiled">Decompiled · read-only</string>
+    <string name="library_decompile_java">Decompile to Java</string>
     <string name="structure_title">Structure</string>
     <string name="structure_filter">Filter…</string>
     <string name="structure_no_symbols">No symbols in this file</string>
     <string name="structure_no_matches">No matches</string>
+    <string name="structure_no_file">Open a file to see its structure</string>
     <string name="comingsoon_footnote">Coming soon</string>
     <string name="edscreen_project_root">project root</string>
     <!-- NOTE: CodeAssistApp.kt reuses settings_title (must exist — expect from settings batch); dep flagged -->
@@ -506,6 +510,7 @@ We never collect your code, file or project names, which features you use, or an
     <string name="preview_choose_preview">Choose preview</string>
     <string name="preview_no_preview_found">No @Preview found</string>
     <string name="preview_renders_on_device">Compose preview renders on device</string>
+    <string name="preview_preparing">Preparing preview (indexing libraries)…</string>
     <string name="preview_device_phone">Phone</string>
     <string name="preview_device_compact">Compact</string>
     <string name="preview_device_tablet">Tablet</string>
@@ -514,6 +519,10 @@ We never collect your code, file or project names, which features you use, or an
     <string name="preview_night">Night</string>
     <string name="preview_zoom_in">Zoom in</string>
     <string name="preview_fit">Fit</string>
+    <string name="preview_lock">Lock the view so taps reach the preview (disables pan &amp; zoom)</string>
+    <string name="preview_unlock">Unlock the view to pan &amp; zoom again</string>
+    <string name="preview_collapse_toolbar">Collapse toolbar</string>
+    <string name="preview_expand_toolbar">Expand toolbar</string>
     <string name="preview_problems">Preview problems</string>
     <string name="preview_copy_problems">Copy problems</string>
     <string name="preview_render_error">render error</string>
@@ -533,6 +542,14 @@ We never collect your code, file or project names, which features you use, or an
     <string name="edoverlay_select_all">Select all</string>
     <string name="edoverlay_quick_documentation">Quick documentation</string>
     <string name="edoverlay_quick_actions">Quick actions</string>
+    <string name="nav_go_to">Go to</string>
+    <string name="nav_declaration">Declaration</string>
+    <string name="nav_implementations">Implementations</string>
+    <string name="nav_type_declaration">Type declaration</string>
+    <string name="nav_super">Super</string>
+    <string name="nav_none">Nothing found in source.</string>
+    <string name="ctxmenu_actions">Actions</string>
+    <string name="ctxmenu_intentions">Intentions</string>
 
     <!-- dialogs: NewFileDialog (enums hold StringResource label) -->
     <string name="newfile_title">New file</string>
@@ -663,6 +680,33 @@ We never collect your code, file or project names, which features you use, or an
     <string name="settings_keystore_manager_subtitle">Create, import &amp; manage signing keystores</string>
     <string name="settings_plugins">Plugins</string>
     <string name="settings_plugins_subtitle">Enable or disable built-in plugins</string>
+    <string name="settings_storage">Storage</string>
+    <string name="settings_storage_subtitle">See what's using space and free it up</string>
+    <string name="storage_total_used">Total used</string>
+    <string name="storage_clear">Clear</string>
+    <string name="storage_clear_all_caches">Clear all caches</string>
+    <string name="storage_projects_header">Projects</string>
+    <string name="storage_open_badge">Open</string>
+    <string name="storage_unavailable">Storage information isn't available.</string>
+    <string name="storage_freed">Freed %1$s</string>
+    <string name="storage_clear_sdk_title">Clear the Android SDK?</string>
+    <string name="storage_clear_sdk_body">This removes the downloaded SDK components and downloads (%1$s). They'll be downloaded again the next time a build needs them.</string>
+    <string name="storage_cat_dependencies_title">Dependencies</string>
+    <string name="storage_cat_dependencies_desc">Downloaded libraries, re-downloaded when needed</string>
+    <string name="storage_cat_index_title">Indexes</string>
+    <string name="storage_cat_index_desc">Code search &amp; completion indexes, rebuilt automatically</string>
+    <string name="storage_cat_build_title">Build output</string>
+    <string name="storage_cat_build_desc">Compiled classes &amp; dex caches, rebuilt on the next build</string>
+    <string name="storage_cat_preview_title">Previews</string>
+    <string name="storage_cat_preview_desc">Layout &amp; Compose preview caches, regenerated on demand</string>
+    <string name="storage_cat_language_title">Language caches</string>
+    <string name="storage_cat_language_desc">Kotlin &amp; custom-view caches, rebuilt automatically</string>
+    <string name="storage_cat_sdk_title">Android SDK &amp; downloads</string>
+    <string name="storage_cat_sdk_desc">SDK components and downloads, re-downloadable</string>
+    <string name="storage_cat_projects_title">Project files</string>
+    <string name="storage_cat_projects_desc">Your source code and project settings</string>
+    <string name="storage_cat_other_title">Other</string>
+    <string name="storage_cat_other_desc">Keystores, backups, and app data</string>
     <string name="plugins_restart_hint">Restart to apply your plugin changes.</string>
     <string name="plugins_required">Required</string>
     <string name="plugins_requires">Requires %1$s</string>
@@ -780,6 +824,11 @@ We never collect your code, file or project names, which features you use, or an
     <string name="dep_section_version">Version</string>
     <string name="dep_section_scope">Scope</string>
     <string name="dep_section_exclusions">Exclusions</string>
+    <string name="dep_section_downloaded">Downloaded</string>
+    <string name="dep_downloaded_help">Versions still cached on disk. Delete ones you no longer use to free space; they re-download if a build needs them.</string>
+    <string name="dep_downloaded_empty">No versions downloaded yet.</string>
+    <string name="dep_in_use">In use</string>
+    <string name="dep_delete_version_named">Delete version %1$s</string>
     <string name="dep_exclusions_help">Transitive group:name entries to drop (either side may be *), comma/space separated.</string>
     <string name="dep_exclusions_hint">e.g. com.google.guava:guava, org.json:*</string>
     <string name="dep_version_hint">version</string>
@@ -978,37 +1027,6 @@ We never collect your code, file or project names, which features you use, or an
     <string name="modcfg_platform_sdk_auto">Auto (%1$s)</string>
 
     <!-- AI coding agent -->
-    <string name="chat_open">AI agent</string>
-    <string name="chat_title">AI</string>
-    <string name="chat_new">New chat</string>
-    <string name="chat_close">Close</string>
-    <string name="chat_stop">Stop</string>
-    <string name="chat_send">Send</string>
-    <string name="chat_retry">Retry</string>
-    <string name="chat_manage_keys">Manage providers</string>
-    <string name="chat_providers_title">AI providers</string>
-    <string name="chat_providers_subtitle">Choose a provider and add your key. Keys are stored on this device.</string>
-    <string name="chat_api_key">API key</string>
-    <string name="chat_base_url">Base URL</string>
-    <string name="chat_model">Model</string>
-    <string name="chat_connected">Connected</string>
-    <string name="chat_add_key">Add API key</string>
-    <string name="chat_show">Show</string>
-    <string name="chat_hide">Hide</string>
-    <string name="chat_gateway_hint">OpenAI-compatible: OpenRouter, LiteLLM, or a self-hosted endpoint.</string>
-    <string name="chat_done">Done</string>
-    <string name="chat_placeholder">Ask about your code, or describe a change</string>
-    <string name="chat_empty_title">AI coding agent</string>
-    <string name="chat_empty_body">Ask about your code, or tell the agent what to change. It can read, search, and edit your files under the permission mode you choose.</string>
-    <string name="chat_need_key">Add an API key in Settings to start.</string>
-    <string name="chat_thinking">Thinking</string>
-    <string name="chat_mode_ask">Ask each</string>
-    <string name="chat_mode_auto">Auto-accept</string>
-    <string name="chat_mode_plan">Plan only</string>
-    <string name="chat_perm_title">Allow this change?</string>
-    <string name="chat_allow">Allow</string>
-    <string name="chat_allow_session">Allow for this session</string>
-    <string name="chat_deny">Deny</string>
 
     <!-- Settings page content (localizes the built-in pages declared in ide-core/BuiltInSettingsPages.kt +
          SettingsBackend). Rendered generically; the UI overlay (SettingsLocalization.kt) uses these where a

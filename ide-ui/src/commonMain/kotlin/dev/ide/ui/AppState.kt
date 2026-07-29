@@ -36,7 +36,7 @@ import kotlinx.coroutines.withContext
  * Top-level screens, ordered by depth so the transition helper can infer direction: a move to a
  * higher-ordinal screen animates "forward" (deeper), a lower one "back".
  */
-enum class Screen { Projects, CreateProject, ImportProject, ExportProject, Editor, Hub, Run, ModuleConfig, SdkManager, KeystoreManager, KeystoreCreate, KeystoreImport, Settings, CodeStyle, Plugins, LessonTrack, LessonPlayer, StoreItem }
+enum class Screen { Projects, CreateProject, ImportProject, ExportProject, Editor, Hub, Run, ModuleConfig, SdkManager, KeystoreManager, KeystoreCreate, KeystoreImport, Settings, CodeStyle, Plugins, Storage, LessonTrack, LessonPlayer, StoreItem }
 
 /**
  * The home screen's bottom-navigation destinations (the landing surface shown on [Screen.Projects]): the
@@ -45,10 +45,21 @@ enum class Screen { Projects, CreateProject, ImportProject, ExportProject, Edito
 enum class HomeTab { Projects, Store, Learn }
 
 /**
- * Top-level editor destinations in the side rail / bottom nav. Per Apple's HIG these are peer
- * *destinations* (not actions): building/running is the Run button + the console sheet, not a tab.
+ * The phone bottom-nav slots (the compact counterpart to the desktop activity rail). Each maps to opening a
+ * left sidebar panel (Files/Search/Source) or the More menu — see [IdeUiState.onBottomNav]. The desktop rail
+ * itself is now data-driven (a `SidebarPanel` list of built-in + plugin tool windows), so it no longer uses
+ * this enum. Kept as the fixed mobile slot model.
  */
 enum class RailDestination { Files, Search, Source, More }
+
+/** Stable ids of the built-in LEFT sidebar panels (peers of plugin-contributed LEFT tool windows). These
+ *  double as the persisted "which panel is open" key and the bottom-nav → panel mapping. */
+object LeftPanelId {
+    const val FILES = "files"
+    const val SEARCH = "search"
+    const val STRUCTURE = "structure"
+    const val SOURCE = "source"
+}
 
 /** Editor surface for a tab: the plain text editor, the projectional block editor over the same AST, a
  *  full-pane preview, or [Split] — code and its preview together (so you can edit and watch it update,
@@ -78,8 +89,20 @@ internal fun editorViewModeOf(id: String?): EditorViewMode? = when (id) {
  * materializes the document `String`. The host observes the session's snapshot state ([EditorSession.textRevision],
  * selection) and pulls [text] lazily, only in debounced effects (analyze/breadcrumb/project/save).
  */
-class OpenFile(val path: String, val name: String, initial: String) {
-    val session = EditorSession(initial, languageFor(name))
+/** The synthetic tab-path scheme for a compiled library class opened read-only (decompiled / attached source).
+ *  A path with this prefix has no disk file — it never participates in save / disk-sync / persistence. */
+internal const val LIBRARY_SCHEME = "library://"
+
+class OpenFile(
+    val path: String,
+    val name: String,
+    initial: String,
+    val readOnly: Boolean = false,
+    /** For a `library://…` tab: how its text was obtained (`source`/`decompiled_java`/`decompiled_kotlin`),
+     *  driving the read-only banner + the "Decompile to Java" affordance. Null for a normal disk file. */
+    val libraryKind: String? = null,
+) {
+    val session = EditorSession(initial, languageFor(name), editable = !readOnly)
     var modified by mutableStateOf(false)
         private set
     /** Which surface this tab shows — text, blocks, or resource preview (text/blocks edit the one [session]).
@@ -168,17 +191,67 @@ class IdeUiState(
     /** Cancel in-flight async work (file opens). Call when this state leaves composition. */
     fun dispose() { scope.cancel() }
 
-    var rail by mutableStateOf(RailDestination.Files)
-    // On mobile the tree + console are space-consuming sheets — start them closed; on desktop they're
-    // persistent panes, so keep them open by default.
-    var navOpen by mutableStateOf(!isMobilePlatform)
-    var searchOpen by mutableStateOf(false)
+    // ---- sidebar panels (the LEFT + RIGHT activity rails) ----
+    // Both sides are a list of `SidebarPanel`s (built-in + plugin tool windows); the rail shows one icon per
+    // panel and selects which one is docked. `null` = that side is collapsed.
+
+    /** Which LEFT panel is open (a [LeftPanelId] or a plugin tool-window id), or null when the left sidebar is
+     *  collapsed. On desktop this is the docked pane; on mobile it's the panel shown in the push drawer.
+     *  Seeded from the persisted last panel in [init] (desktop opens it; mobile starts collapsed). */
+    var selectedLeftPanel by mutableStateOf<String?>(null)
+    /** The panel to reopen when the left sidebar is toggled back on (survives a collapse). */
+    private var lastLeftPanel: String = LeftPanelId.FILES
+    /** Which RIGHT panel is open (a plugin tool-window id — e.g. the AI chat), or null when collapsed. Right
+     *  panels are fully plugin-derived; a disabled plugin contributes nothing and leaves no rail icon. */
+    var selectedRightPanel by mutableStateOf<String?>(null)
+
+    /** True while the left sidebar is showing a panel (drives the top-bar toggle glyph, the compact push
+     *  drawer's open state, and the back handler). */
+    val leftOpen: Boolean get() = selectedLeftPanel != null
+
+    /** Desktop rail: tap an icon to open/switch to it; tap the already-selected one to collapse the side. */
+    fun toggleLeftPanel(id: String) {
+        if (selectedLeftPanel == id) selectedLeftPanel = null else rememberAndSelectLeft(id)
+    }
+    /** Open (and switch to) a LEFT panel — the mobile segmented switcher, bottom nav, and breadcrumb use this. */
+    fun selectLeftPanel(id: String) = rememberAndSelectLeft(id)
+    /** The top-bar sidebar button: reopen the last panel, or collapse if one is already open. */
+    fun toggleLeftSidebar() { if (leftOpen) selectedLeftPanel = null else rememberAndSelectLeft(lastLeftPanel) }
+    /** Open the left sidebar to its last panel (the compact push-drawer's swipe-open). No-op if already open. */
+    fun openLeftSidebar() { if (!leftOpen) rememberAndSelectLeft(lastLeftPanel) }
+
+    private fun rememberAndSelectLeft(id: String) {
+        selectedLeftPanel = id
+        lastLeftPanel = id
+        backend.settings.setPreference(LEFT_PANEL_PREF, id)
+    }
+
+    /** RIGHT rail: tap an icon to open/switch; tap the selected one to collapse (the phone swipe routes here too). */
+    fun toggleRightPanel(id: String) { selectedRightPanel = if (selectedRightPanel == id) null else id }
+    /** Open (and switch to) a RIGHT panel — the mobile right-overlay switcher uses this. */
+    fun selectRightPanel(id: String) { selectedRightPanel = id }
+
+    /** The bottom-nav slot that reflects the current state (or null when none of its slots is active). */
+    fun bottomNavSelection(): RailDestination? = when {
+        moreOpen -> RailDestination.More
+        selectedLeftPanel == LeftPanelId.SEARCH -> RailDestination.Search
+        selectedLeftPanel == LeftPanelId.SOURCE -> RailDestination.Source
+        else -> null
+    }
+    /** Route a bottom-nav tap: open the left drawer to the matching panel, or open the More menu. */
+    fun onBottomNav(dest: RailDestination) = when (dest) {
+        RailDestination.Files -> selectLeftPanel(LeftPanelId.FILES)
+        RailDestination.Search -> selectLeftPanel(LeftPanelId.SEARCH)
+        RailDestination.Source -> selectLeftPanel(LeftPanelId.SOURCE)
+        RailDestination.More -> { moreOpen = true }
+    }
+
+    // On mobile the console is a space-consuming sheet — start it closed; on desktop it's a persistent pane.
     var consoleOpen by mutableStateOf(!isMobilePlatform)
-    /** The AI agent chat drawer (right edge; desktop layout). */
-    var chatOpen by mutableStateOf(false)
+
     var paletteOpen by mutableStateOf(false)
-    /** The in-file structure / outline bottom sheet (opened from the breadcrumb tap or Ctrl-F12). */
-    var structureOpen by mutableStateOf(false)
+    /** Whether the "More" actions sheet is showing (rail footer / bottom-nav More). */
+    var moreOpen by mutableStateOf(false)
 
     // ---- run-conflict gate: guard a new Run while a build/program is already running ----
 
@@ -289,6 +362,10 @@ class IdeUiState(
     init {
         applySettings(backend.settings.settings())
         loadTreeExpansion()
+        // Restore the last-open left panel: desktop reopens it as a docked pane; mobile starts collapsed but
+        // remembers it for the next time the drawer is toggled on.
+        backend.settings.preference(LEFT_PANEL_PREF)?.let { lastLeftPanel = it }
+        if (!isMobilePlatform) selectedLeftPanel = lastLeftPanel
     }
 
     /**
@@ -335,8 +412,12 @@ class IdeUiState(
         softKeyboardSuggestions = s.softKeyboardSuggestions
     }
 
-    /** A transient destination shown as a sheet/overlay (Source, More) — null when none is open. */
-    var sheetDest by mutableStateOf<RailDestination?>(null)
+    /**
+     * Whether the projectional block editor is available (the `blocks` plugin is enabled). Read once from the
+     * backend at construction — the plugin set is app-global and restart-applied, so it can't change within a
+     * session. Gates the Code/Blocks view-mode toggle and the restore of a persisted `blocks` tab.
+     */
+    val blocksEnabled: Boolean = backend.blocks.blocksEnabled()
 
     /** Whether the Logs viewer sheet (editor & analysis logs, opened from the More menu) is showing. */
     var logsOpen by mutableStateOf(false)
@@ -346,16 +427,6 @@ class IdeUiState(
 
     /** The module whose Add-Source-Root dialog is open, or null when closed. */
     var addSourceRootModule by mutableStateOf<String?>(null)
-
-    /** Route to a rail destination: Files/Search toggle their side panes; Source/More open as a sheet. */
-    fun selectRail(dest: RailDestination) {
-        rail = dest
-        when (dest) {
-            RailDestination.Files -> { navOpen = !navOpen; searchOpen = false; sheetDest = null }
-            RailDestination.Search -> { searchOpen = !searchOpen; navOpen = false; sheetDest = null }
-            RailDestination.Source, RailDestination.More -> { sheetDest = dest }
-        }
-    }
 
     val active: OpenFile? get() = openFiles.getOrNull(activeIndex)
 
@@ -387,12 +458,59 @@ class IdeUiState(
         return false
     }
 
-    /** Open [path] and move the caret to [offset] (go-to-symbol). */
+    /** Open [path] and move the caret to [offset] (go-to-symbol). A `library://…` path routes through
+     *  [openLibrary] (fetch decompiled/attached-source content, open read-only) instead of a disk read. */
     fun openAt(path: String, offset: Int) {
+        if (path.startsWith(LIBRARY_SCHEME)) { openLibrary(path); return }
         val name = path.substringAfterLast('/').substringAfterLast('\\')
         scope.launch {
             openSuspend(path, name)
             active?.session?.setCaret(offset) // setCaret coerces into the buffer
+        }
+    }
+
+    /**
+     * Open a compiled LIBRARY class in a read-only tab. [libPath] is `library://<fqn>[#member]`; the content
+     * (attached source, else a decompiled view) is fetched from the backend off the main thread against the
+     * active tab's module, then shown read-only with the caret on [member] (searched in the fetched text), or
+     * the top. [forceJava] runs the Java decompiler on any class ("Decompile to Java"). Re-opening focuses the
+     * existing tab (keyed by the canonical `library://<fqn>[?java]` path the backend returns).
+     */
+    fun openLibrary(libPath: String, forceJava: Boolean = false) {
+        val raw = libPath.removePrefix(LIBRARY_SCHEME).substringBefore("?")
+        val fqn = raw.substringBefore('#')
+        val member = raw.substringAfter('#', "").ifEmpty { null }
+        val contextPath = active?.path?.takeUnless { it.startsWith(LIBRARY_SCHEME) }
+        scope.launch {
+            val content = withContext(ioDispatcher) {
+                runCatching { backend.editor.libraryContent(contextPath ?: fqn, fqn, forceJava) }.getOrNull()
+            } ?: return@launch
+            if (focusOpenTab(content.path)) {
+                active?.session?.let { placeLibraryCaret(it, member ?: fqn.substringAfterLast('.')) }
+                return@launch
+            }
+            val tab = OpenFile(content.path, content.name, content.text, readOnly = true, libraryKind = content.kind)
+            openFiles.add(tab)
+            activeIndex = openFiles.lastIndex
+            placeLibraryCaret(tab.session, member ?: fqn.substringAfterLast('.'))
+            backend.editor.onFileOpened(content.path)
+        }
+    }
+
+    /** Move [session]'s caret to the first occurrence of [name] as a whole word (a best-effort landing on the
+     *  declaration in decompiled/library text), else leave it at the top. */
+    private fun placeLibraryCaret(session: EditorSession, name: String) {
+        val text = session.doc.text
+        var from = 0
+        while (true) {
+            val i = text.indexOf(name, from)
+            if (i < 0) break
+            val before = if (i > 0) text[i - 1] else ' '
+            val after = if (i + name.length < text.length) text[i + name.length] else ' '
+            if (!before.isLetterOrDigit() && before != '_' && !after.isLetterOrDigit() && after != '_') {
+                session.setCaret(i); return
+            }
+            from = i + name.length
         }
     }
 
@@ -437,7 +555,7 @@ class IdeUiState(
 
     /** Persist [file]'s buffer to disk, rebase its saved baseline, and clear the dirty flag. No-op if clean. */
     fun save(file: OpenFile) {
-        if (!file.modified) return
+        if (file.readOnly || !file.modified) return
         val text = file.text // one lazy materialization, on save (not per keystroke)
         backend.editor.saveFile(file.path, text)
         file.onSaved(text)
@@ -462,7 +580,10 @@ class IdeUiState(
                 // Reapply the saved per-tab view state to the tab we just opened. setCaret + the scroll anchor
                 // coerce into the (possibly changed) buffer, so a shrunken file can't strand the caret/scroll.
                 openFiles.firstOrNull { it.path == tab.path }?.let { f ->
-                    editorViewModeOf(tab.viewMode)?.let { f.viewMode = it }
+                    // Drop a persisted Blocks mode if the block editor is disabled (plugin off) — restore as text.
+                    editorViewModeOf(tab.viewMode)
+                        ?.takeUnless { it == EditorViewMode.Blocks && !blocksEnabled }
+                        ?.let { f.viewMode = it }
                     f.session.setCaret(tab.caret)
                     f.session.viewportTopLine = tab.scrollLine.coerceAtLeast(0)
                 }
@@ -475,9 +596,12 @@ class IdeUiState(
 
     /** The current open tabs as a persistable snapshot: each tab's path, caret, scroll line, and view mode,
      *  plus the active index. */
-    fun tabsSnapshot(): UiOpenTabs =
-        UiOpenTabs(
-            openFiles.map { f ->
+    fun tabsSnapshot(): UiOpenTabs {
+        // Read-only library tabs (`library://…`) have no disk file — never persist them (they'd fail to reopen).
+        val persistable = openFiles.filter { !it.readOnly }
+        val newActive = active?.takeUnless { it.readOnly }?.let { persistable.indexOf(it) } ?: 0
+        return UiOpenTabs(
+            persistable.map { f ->
                 UiOpenTab(
                     path = f.path,
                     caret = f.session.selection.start,
@@ -485,8 +609,9 @@ class IdeUiState(
                     viewMode = f.viewMode.persistId(),
                 )
             },
-            activeIndex,
+            newActive.coerceAtLeast(0),
         )
+    }
 
     /** Pick a sensible first file: a `Main.java`, else the first source file in the tree. */
     fun defaultFile(): TreeNode? {
@@ -541,6 +666,7 @@ class IdeUiState(
         scope.launch {
             for (i in openFiles.indices) {
                 val f = openFiles[i]
+                if (f.readOnly) continue
                 val followsFileRename = newPath != null && f.path == activePath
                 if (!followsFileRename && f.modified) continue
                 val diskPath = if (followsFileRename) newPath!! else f.path
@@ -563,7 +689,7 @@ class IdeUiState(
         scope.launch {
             for (i in openFiles.indices) {
                 val f = openFiles[i]
-                if (f.modified) continue
+                if (f.readOnly || f.modified) continue
                 val text = readTabText(f.path) ?: continue
                 if (text == f.savedText) continue // untouched → preserve session/undo/caret
                 val name = f.path.substringAfterLast('/').substringAfterLast('\\')
@@ -580,7 +706,7 @@ class IdeUiState(
     /** Re-push every open buffer to the editor backend so it re-analyzes against the current classpath — used
      *  after switching the active build variant (the engine has already invalidated the per-module analyzers). */
     fun reanalyzeOpenFiles() {
-        for (f in openFiles) backend.editor.updateDocument(f.path, f.text)
+        for (f in openFiles) if (!f.readOnly) backend.editor.updateDocument(f.path, f.text)
     }
 
     /** Create a new file through the backend (off the main thread), refresh the tree, and open it in the editor. */
@@ -722,6 +848,10 @@ class IdeUiState(
         /** App preference: "true" once the first-build notification-permission prompt has been shown (see
          *  `BuildNotificationGate`), so later builds don't re-prompt. Re-request from Settings → Build Runtime. */
         const val NOTIF_BUILD_PROMPT_RESOLVED_PREF = "notif.buildPromptResolved"
+
+        /** App preference: the last-open LEFT sidebar panel id ([LeftPanelId] or a plugin tool-window id), so
+         *  the activity rail reopens to the same panel next launch. */
+        const val LEFT_PANEL_PREF = "sidebar.leftPanel"
     }
 }
 
