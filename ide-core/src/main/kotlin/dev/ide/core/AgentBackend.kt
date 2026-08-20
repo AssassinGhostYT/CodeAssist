@@ -393,7 +393,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         val signature =
             "${cfg.selectedId}|$model|${cfg.baseUrl}|${cfg.apiKey.hashCode()}|${cfg.caCertificatePem.hashCode()}|$maxIterations|$maxTokens|$thinkingBudget|$webSearch|$reasoningEffort"
         if (loop == null || loopSignature != signature) {
-            val client = provider.client(ProviderConfig(cfg.apiKey, cfg.baseUrl, cfg.caCertificatePem))
+            val client = provider.client(ProviderConfig(cfg.apiKey ?: "", cfg.baseUrl, cfg.caCertificatePem))
             loop = AgentLoop(
                 client, model, tools, gate, ::systemPrompt,
                 maxTokens = maxTokens,
