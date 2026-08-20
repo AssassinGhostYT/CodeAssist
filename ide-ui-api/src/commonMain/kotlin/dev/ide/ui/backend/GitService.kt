@@ -1,10 +1,5 @@
 package dev.ide.ui.backend
 
-/** Working-tree change kind for a [GitFile]. */
-enum class GitStatus {
-    Added, Modified, Deleted, Untracked,
-}
-
 /** A working-tree change: [path] with [status], [staged] when prepared in the index. */
 data class GitFile(
     val path: String,
