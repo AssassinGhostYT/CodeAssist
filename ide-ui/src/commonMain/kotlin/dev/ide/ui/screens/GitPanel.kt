@@ -2,6 +2,7 @@ package dev.ide.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -783,7 +784,7 @@ private fun ChangeGroup(
             Modifier.fillMaxWidth().clickable { onOpenDiff(f) }.padding(vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Surface(modifier = Modifier.size(8.dp), shape = CircleShape, color = color)
+            Surface(modifier = Modifier.size(8.dp), shape = CircleShape, color = color) {}
             Text(
                 f.path,
                 style = MaterialTheme.typography.bodySmall,
@@ -1361,7 +1362,10 @@ private fun DeviceFlowDialog(flow: GitHubDeviceFlow?, onDismiss: () -> Unit, onO
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(top = 14.dp).fillMaxWidth().clickable { onOpen(flow.verificationUri) },
         ) {
-            Row(Modifier.padding(horizontal = 18.dp, vertical = 11.dp), horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 11.dp),
+                horizontalArrangement = Arrangement.Center,
+            ) {
                 Icon(CaIcons.share, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(16.dp))
                 Text(
                     "Abrir ${flow.verificationUri}",
