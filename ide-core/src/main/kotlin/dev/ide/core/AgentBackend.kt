@@ -233,6 +233,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         "openai" -> "openaiKey"
         "gemini" -> "geminiKey"
         "openrouter" -> "openrouterKey"
+        OPENCODE -> "opencodeKey"
         GATEWAY -> "gatewayKey"
         else -> "anthropicKey"
     }
@@ -254,7 +255,8 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         }
         // A synthetic "Custom gateway" entry (OpenAI-compatible endpoint); its client is the OpenAI provider.
         val gateway = UiAgentProvider(GATEWAY, "Custom gateway", emptyList(), "", apiKey = pref("gatewayKey").orEmpty())
-        val configured = !cfg.apiKey.isNullOrBlank() && (cfg.selectedId != GATEWAY || !cfg.baseUrl.isNullOrBlank())
+        val freeTier = cfg.selectedId == OPENCODE
+        val configured = freeTier || (!cfg.apiKey.isNullOrBlank() && (cfg.selectedId != GATEWAY || !cfg.baseUrl.isNullOrBlank()))
         return UiAgentConfig(
             providers = builtins + gateway,
             selectedProvider = cfg.selectedId,
@@ -375,7 +377,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
             appendError("Unknown AI provider '${cfg.selectedId}'.")
             return
         }
-        if (cfg.apiKey.isNullOrBlank()) {
+        if (cfg.apiKey.isNullOrBlank() && cfg.selectedId != OPENCODE) {
             appendError("Add an API key to use the agent. Tap the key icon to manage providers.")
             return
         }
@@ -555,6 +557,7 @@ internal class AgentBackend(private val ctx: BackendContext) : AgentService {
         const val AI_PAGE = "ai"
         const val MODE_PREF = "agent.permissionMode"
         const val GATEWAY = "gateway"
+        const val OPENCODE = "opencode"
 
         /** The `settings.ai.*` pref backing the FTP asset server toggle (`ftpServer`). */
         const val FTP_PREF = "ftpServer"

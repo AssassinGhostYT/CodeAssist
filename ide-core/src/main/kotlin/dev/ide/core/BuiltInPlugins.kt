@@ -19,6 +19,8 @@ import dev.ide.core.completion.UserLiveTemplateContributor
 import dev.ide.core.gradle.GradleBuildFileWriter
 import dev.ide.core.gradle.GradleProjectImporter
 import dev.ide.core.services.AndroidResourceService
+import dev.ide.core.services.DartPubService
+import dev.ide.core.services.GitServiceCli
 import dev.ide.core.services.BlockService
 import dev.ide.core.services.BuildService
 import dev.ide.core.services.ComposePreviewService
@@ -146,6 +148,7 @@ object BuiltInPlugins {
         BuiltInPlugin(JavaPsiLanguagePlugin()),
         BuiltInPlugin(XmlLanguagePlugin()),
         BuiltInPlugin(KotlinLanguagePlugin()),
+        BuiltInPlugin(DartLanguagePlugin()),
         BuiltInPlugin(JavaSupportPlugin()),
         BuiltInPlugin(KotlinSupportPlugin()),
         BuiltInPlugin(KspSupportPlugin(env)),
@@ -266,6 +269,29 @@ private class KotlinLanguagePlugin : Plugin {
             FILE_TYPE_EP,
             FileTypeMapping(listOf(".kt", ".kts"), KotlinLanguageBackend.LANGUAGE_ID)
         )
+    }
+}
+
+/** Dart & Flutter language backend and project templates. */
+private class DartLanguagePlugin : Plugin {
+    override val manifest = PluginManifest(
+        id = "dart-language",
+        name = "Dart & Flutter Language",
+        description = "Dart & Flutter editing: parsing, syntax highlighting, code completion, and project templates.",
+        dependsOn = listOf("jdt-language"),
+    )
+
+    override fun register(reg: PluginRegistration) {
+        reg.register(LANGUAGE_BACKEND_EP, dev.ide.lang.dart.DartLanguageBackend())
+        reg.register(FILE_TYPE_EP, dev.ide.lang.dart.DART_FILE_TYPE_MAPPING)
+        reg.contributeVia { ext, pid ->
+            val moduleTypes = ModuleTypeRegistry(ext)
+            moduleTypes.register(dev.ide.lang.dart.DartConsoleModuleType, pid)
+            moduleTypes.register(dev.ide.lang.dart.FlutterAppModuleType, pid)
+            val templates = ProjectTemplateRegistry(ext)
+            templates.register(dev.ide.lang.dart.DartConsoleAppTemplate, pid)
+            templates.register(dev.ide.lang.dart.FlutterAppTemplate, pid)
+        }
     }
 }
 
@@ -528,6 +554,8 @@ private class IndexingPlugin : Plugin {
             JavaMainIndex,
             KotlinMainIndex,
             AndroidResourceIndex,
+            dev.ide.lang.dart.index.DartClassNamesIndex,
+            dev.ide.lang.dart.index.DartCallablesIndex,
             BinarySubtypeIndex,
             BinaryAnnotationIndex,
             KotlinSourceSubtypeIndex,
@@ -731,6 +759,12 @@ private class IdeCoreServicesPlugin : Plugin {
         }
         reg.service(COMPOSE_PREVIEW_SERVICE, ServiceScopeLevel.WORKSPACE) {
             ComposePreviewService(getService(ENGINE_CONTEXT))
+        }
+        reg.service(DART_PUB_SERVICE, ServiceScopeLevel.WORKSPACE) {
+            DartPubService(getService(ENGINE_CONTEXT))
+        }
+        reg.service(GIT_SERVICE, ServiceScopeLevel.WORKSPACE) {
+            GitServiceCli(getService(ENGINE_CONTEXT))
         }
     }
 }

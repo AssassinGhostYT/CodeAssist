@@ -8,6 +8,7 @@ import dev.ide.ui.backend.DependencyService
 import dev.ide.ui.backend.DiagnosticsService
 import dev.ide.ui.backend.EditorService
 import dev.ide.ui.backend.FileService
+import dev.ide.ui.backend.GitService
 import dev.ide.ui.backend.ModuleService
 import dev.ide.ui.backend.SigningService
 import dev.ide.ui.backend.PreviewService
@@ -142,6 +143,8 @@ class IdeServicesBackend(
      */
     override val services: IdeServices
         get() = activeServices ?: error("No project is open")
+
+    override val git: GitService get() = services.git
 
     override val servicesOrNull: IdeServices? get() = activeServices
 

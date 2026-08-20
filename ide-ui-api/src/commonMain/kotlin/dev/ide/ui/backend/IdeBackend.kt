@@ -15,6 +15,9 @@ class AnalysisPreempted : RuntimeException("analysis preempted by a higher-prior
  * would implement the same contract.
  */
 interface IdeBackend {
+    /** Source-control integration. Defaults to a no-op so backends that don't wire git still compile. */
+    val git: GitService get() = NoopGitService
+
     /** The active project's identity (name, root, module count) — the one cross-cutting field on the root. */
     val project: ProjectInfo
 

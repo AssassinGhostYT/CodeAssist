@@ -52,7 +52,6 @@ import dev.ide.ui.components.ActivityRail
 import dev.ide.ui.components.AdSlot
 import dev.ide.ui.components.BuildConsole
 import dev.ide.ui.components.BuildDock
-import dev.ide.ui.components.ComingSoon
 import dev.ide.ui.components.DockBarHeight
 import dev.ide.ui.components.FileNavigator
 import dev.ide.ui.components.FileOpKind
@@ -136,8 +135,6 @@ internal fun buildLeftPanels(
     val searchTitle = stringResource(Res.string.search)
     val structureTitle = stringResource(Res.string.structure_title)
     val sourceTitle = stringResource(Res.string.edchrome_source)
-    val sourceDesc = stringResource(Res.string.edsheet_source_control_desc)
-    val sourceHeading = stringResource(Res.string.edsheet_source_control)
 
     // Remembered HERE (the panel host stays composed while the drawer/left panel is swapped) rather than inside
     // SearchScreen, so a search survives navigating to a result and reopening Search for the next occurrence.
@@ -163,12 +160,7 @@ internal fun buildLeftPanels(
             StructureOutline(state, onNavigated = closeDrawer, modifier = Modifier.fillMaxSize())
         },
         SidebarPanel(LeftPanelId.SOURCE, sourceTitle, CaIcons.gitBranch, order = 40) {
-            ComingSoon(
-                icon = CaIcons.gitBranch,
-                title = sourceHeading,
-                description = sourceDesc,
-                modifier = Modifier.fillMaxSize(),
-            )
+            GitPanel(backend = state.backend)
         },
     )
     val plugins = pluginPanels(ToolWindowAnchor.LEFT, state.backend, state.active?.path)

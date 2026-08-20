@@ -168,7 +168,7 @@ class GradleProjectImporter : ProjectImporter {
     }
 
     private companion object {
-        const val DEFAULT_COMPILE_SDK = 34
+        const val DEFAULT_COMPILE_SDK = 36
         const val DEFAULT_MIN_SDK = 21
     }
 }

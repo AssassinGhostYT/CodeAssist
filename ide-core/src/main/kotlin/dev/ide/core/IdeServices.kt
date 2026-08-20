@@ -60,6 +60,7 @@ import dev.ide.core.event.AnalysisEvent
 import dev.ide.core.event.IdeEventTopics
 import dev.ide.core.event.IndexEvent
 import dev.ide.core.services.AndroidResourceService
+import dev.ide.core.services.DartPubService
 import dev.ide.core.services.BlockService
 import dev.ide.core.services.BuildService
 import dev.ide.core.services.ComposePreviewService
@@ -227,6 +228,7 @@ import dev.ide.preview.impl.RealViewRequest
 import dev.ide.preview.impl.RealViewResult
 import dev.ide.preview.impl.RealViewRuntime
 import dev.ide.ui.backend.IndexUiBuildStats
+import dev.ide.ui.backend.GitService
 import dev.ide.ui.backend.IndexUiStatus
 import dev.ide.ui.backend.IndexWorkItem
 import dev.ide.ui.backend.IndexWorkState
@@ -424,6 +426,8 @@ internal val ANDROID_RESOURCE_SERVICE =
 internal val REFACTOR_SERVICE = ServiceKey<RefactorService>("ide.service.refactor")
 internal val KOTLIN_EDITOR_SERVICE = ServiceKey<KotlinEditorService>("ide.service.kotlinEditor")
 internal val COMPOSE_PREVIEW_SERVICE = ServiceKey<ComposePreviewService>("ide.service.composePreview")
+internal val DART_PUB_SERVICE = ServiceKey<DartPubService>("ide.service.dartPub")
+internal val GIT_SERVICE = ServiceKey<GitService>("ide.service.git")
 
 /**
  * APPLICATION-scoped shared toolchain services — reachable with no project open (the picker's Settings &
@@ -794,6 +798,14 @@ class IdeServices private constructor(
     /** WORKSPACE-scoped Compose @Preview interpreter (lower / diagnostics / run / readiness). */
     internal val composePreview: ComposePreviewService
         get() = store.workspaceContainer.getService(COMPOSE_PREVIEW_SERVICE)
+
+    /** WORKSPACE-scoped Dart/Flutter pub.dev package resolution (downloads + attaches package sources). */
+    internal val dartPub: DartPubService
+        get() = store.workspaceContainer.getService(DART_PUB_SERVICE)
+
+    /** WORKSPACE-scoped Git integration (status / stage / commit / push) for the Source-control panel. */
+    internal val git: GitService
+        get() = store.workspaceContainer.getService(GIT_SERVICE)
 
     /** Set the Maven version-conflict policy (delegates to the dependency service). Kept here so the settings
      *  surface can reach it through the engine without depending on the service type. */

@@ -82,6 +82,7 @@ include(
     ":kotlin-compiler-deps", // the ONE unshaded Kotlin compiler + IntelliJ platform dependency set (no embeddable)
     ":intellij-psi-host", // the ONE shared IntelliJ platform env both lang-kotlin + lang-xml parse against
     ":lang-kotlin", // editor-only Kotlin LanguageBackend (PSI parse + our own symbols/inference/completion)
+    ":lang-dart", // Dart & Flutter language backend
     ":lang-ksp", // KSP2 source generation: KspSourceGenerator (SourceGenerator SPI) runs KotlinSymbolProcessing over a module → generated sources
 
     ":decompiler", // navigate-into-library: read a classpath class → attached source, else decompile (Vineflower for Java, @Metadata stub for Kotlin)

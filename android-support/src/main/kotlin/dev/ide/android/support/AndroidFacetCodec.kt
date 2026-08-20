@@ -49,7 +49,7 @@ object AndroidFacetCodec : FacetCodec<AndroidFacet> {
         val minSdk = values.int("minSdk") ?: 21
         return AndroidFacet(
             namespace = values["namespace"] as? String ?: "",
-            compileSdk = values.int("compileSdk") ?: values.int("targetSdk") ?: 34,
+            compileSdk = values.int("compileSdk") ?: values.int("targetSdk") ?: 36,
             minSdk = minSdk,
             targetSdk = values.int("targetSdk") ?: minSdk,
             manifest = values["manifest"] as? String ?: "src/main/AndroidManifest.xml",

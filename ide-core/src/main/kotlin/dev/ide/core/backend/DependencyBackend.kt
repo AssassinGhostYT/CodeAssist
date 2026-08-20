@@ -19,8 +19,11 @@ internal class DependencyBackend(private val ctx: BackendContext) : DependencySe
     override val depsState: StateFlow<DepsResolveState> =
         ctx.engineFlow(DepsResolveState()) { it.dependencies.depsState }
 
-    override fun startPendingDependencyResolution() =
+    override fun startPendingDependencyResolution() {
         ctx.services.dependencies.startPendingDependencyResolution()
+        // Dart/Flutter modules carry no Maven coordinates — kick off their pub.dev package resolution too.
+        ctx.services.dartPub.resolveDartModules()
+    }
 
     override suspend fun retryDependencyResolution() =
         withContext(Dispatchers.IO) { ctx.services.dependencies.retryDependencyResolution() }

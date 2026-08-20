@@ -27,12 +27,14 @@ internal object AndroidTemplateSupport {
             TemplateParameter.Choice.Option("30", "API 30 · Android 11"),
             TemplateParameter.Choice.Option("33", "API 33 · Android 13"),
             TemplateParameter.Choice.Option("34", "API 34 · Android 14"),
+            TemplateParameter.Choice.Option("35", "API 35 · Android 15"),
+            TemplateParameter.Choice.Option("36", "API 36 · Android 16"),
         ),
         defaultIndex = 2,
         help = "Lowest Android version the app supports.",
     )
 
-    /** The targetSdk picker — the API level the app is tested/optimised against. */
+    /** The targetSdk picker — the API level the app is tested/optimised against. Defaults to the newest. */
     val targetSdkParam = TemplateParameter.Choice(
         key = "targetSdk",
         label = "Target SDK",
@@ -40,8 +42,10 @@ internal object AndroidTemplateSupport {
             TemplateParameter.Choice.Option("30", "API 30 · Android 11"),
             TemplateParameter.Choice.Option("33", "API 33 · Android 13"),
             TemplateParameter.Choice.Option("34", "API 34 · Android 14"),
+            TemplateParameter.Choice.Option("35", "API 35 · Android 15"),
+            TemplateParameter.Choice.Option("36", "API 36 · Android 16"),
         ),
-        defaultIndex = 2,
+        defaultIndex = 4,
         help = "The API level the app is built and optimised against.",
     )
 
@@ -57,7 +61,7 @@ internal object AndroidTemplateSupport {
         help = "Language of the starter source files.",
     )
 
-    const val COMPILE_SDK = 34
+    const val COMPILE_SDK = 36
 
     /** Google's Material Components for Android — the library behind Material You theming + the FAB/Snackbar. */
     const val MATERIAL_COORDINATE = "com.google.android.material:material:1.12.0"

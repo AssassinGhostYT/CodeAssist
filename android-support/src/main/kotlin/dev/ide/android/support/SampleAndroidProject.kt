@@ -40,12 +40,12 @@ object SampleAndroidProject {
             }
             addModule("feature", androidLib).apply {
                 this.languageLevel = languageLevel
-                putFacet(AndroidFacet(namespace = "com.example.feature", compileSdk = 34, minSdk = 24, isApplication = false))
+                putFacet(AndroidFacet(namespace = "com.example.feature", compileSdk = 36, minSdk = 24, isApplication = false))
                 addDependency(ModuleDependency(ModuleId("core"), DependencyScope.API, exported = true))
             }
             addModule("app", androidApp).apply {
                 this.languageLevel = languageLevel
-                putFacet(AndroidFacet(namespace = "com.example.app", compileSdk = 34, minSdk = 24, targetSdk = 34))
+                putFacet(AndroidFacet(namespace = "com.example.app", compileSdk = 36, minSdk = 24, targetSdk = 36))
                 addDependency(ModuleDependency(ModuleId("feature"), DependencyScope.IMPLEMENTATION))
             }
             commit()

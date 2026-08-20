@@ -59,7 +59,7 @@ sealed class AndroidModuleType(
     )
 
     companion object {
-        const val DEFAULT_COMPILE_SDK = 34
+        const val DEFAULT_COMPILE_SDK = 36
         // 26, not 21: below API 26 D8 must desugar (lambdas/default-interface-methods/core-library) every
         // library on device, and the whole-set desugaring cache key means adding a dependency re-dexes the
         // entire classpath. At 26+ desugaring is off and each library dexes once into a cross-project bucket,

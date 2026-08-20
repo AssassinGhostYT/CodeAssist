@@ -18,6 +18,7 @@ dependencies {
     implementation(project(":lang-java")) // IntelliJ-PSI Java backend (native resolution/inference); JDT is still the .java default
     implementation(project(":lang-xml")) // XML language backend (Android layouts/values/manifest)
     implementation(project(":lang-kotlin")) // editor-only Kotlin language backend (PSI parse + own completion)
+    implementation(project(":lang-dart")) // Dart & Flutter language backend
     implementation(project(":lang-ksp")) // KSP2 source generation: KspSourceGenerator + bundled thin runner/processors (Room)
     implementation(project(":decompiler")) // navigate-into-library: attached source, else Vineflower/@Metadata decompile
     implementation(project(":index-api"))
@@ -48,6 +49,7 @@ dependencies {
     // Editor customizations (symbol bar / macros) persist + import/export as JSON via the tree API (no
     // @Serializable / compiler plugin needed).
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.jgit)   // in-process git for the Source-control panel (no CLI on Android)
 
     testImplementation(libs.kotlinx.coroutines.test)
     // Opt-in regression suites (`regressionTest`): shared benchmark/baseline harness.
