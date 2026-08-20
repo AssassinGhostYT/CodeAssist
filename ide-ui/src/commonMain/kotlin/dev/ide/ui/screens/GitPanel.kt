@@ -64,12 +64,16 @@ import androidx.compose.ui.window.Dialog
 import dev.ide.ui.backend.GitBranch
 import dev.ide.ui.backend.GitCommitInfo
 import dev.ide.ui.backend.GitFile
+import dev.ide.ui.backend.GitHubDeviceFlow
+import dev.ide.ui.backend.GitHubRepo
+import dev.ide.ui.backend.GitHubSession
 import dev.ide.ui.backend.GitOpResult
 import dev.ide.ui.backend.GitRemote
 import dev.ide.ui.backend.GitService
 import dev.ide.ui.backend.GitStash
 import dev.ide.ui.backend.GitStatus
 import dev.ide.ui.backend.IdeBackend
+import dev.ide.ui.backend.PublishMode
 import dev.ide.ui.icons.CaIcons
 import dev.ide.ui.theme.Ide
 import dev.ide.ui.theme.Motion
@@ -83,11 +87,11 @@ private enum class GitOp {
     Refresh, Init, Commit, Push, Pull, Fetch,
     BranchCreate, BranchCheckout, BranchDelete,
     Merge, StashSave, StashRestore, StashDrop,
-    RemoteAdd, RemoteRemove,
+    RemoteAdd, RemoteRemove, Publish,
 }
 
 /** Which dialog is open; null = none. */
-private enum class GitDialog { Commit, Branch, Merge, Stash, Remote }
+private enum class GitDialog { Commit, Branch, Merge, Stash, Remote, Device, Publish }
 
 /** An auto-dismissing toast: [ok] selects the success/error styling. */
 private data class Notice(val text: String, val ok: Boolean, val id: Long)
@@ -116,6 +120,10 @@ fun GitPanel(backend: IdeBackend) {
     var refreshing by remember { mutableStateOf(false) }
     var diffFile by remember { mutableStateOf<GitFile?>(null) }
     var diffText by remember { mutableStateOf("") }
+    var session by remember { mutableStateOf<GitHubSession?>(null) }
+    var repos by remember { mutableStateOf<List<GitHubRepo>>(emptyList()) }
+    var deviceFlow by remember { mutableStateOf<GitHubDeviceFlow?>(null) }
+    var connecting by remember { mutableStateOf(false) }
 
     fun reload() {
         scope.launch(Dispatchers.IO) {
@@ -126,6 +134,7 @@ fun GitPanel(backend: IdeBackend) {
             val br = runCatching { git.branches() }.getOrDefault(emptyList())
             val st = runCatching { git.stashList() }.getOrDefault(emptyList())
             val lc = runCatching { git.lastCommit() }.getOrNull()
+            val s = runCatching { git.githubSession() }.getOrNull()
             withContext(Dispatchers.Main) {
                 files = f
                 currentBranch = b
@@ -133,6 +142,7 @@ fun GitPanel(backend: IdeBackend) {
                 branchList = br
                 stashList = st
                 lastCommit = lc
+                if (s != null) session = s
                 refreshing = false
             }
         }
@@ -165,12 +175,94 @@ fun GitPanel(backend: IdeBackend) {
         }
     }
 
+    /** Starts the GitHub OAuth device flow: returns the code to display, or a readable error. */
+    fun startGithubConnect() {
+        if (connecting || deviceFlow != null) return
+        scope.launch {
+            connecting = true
+            val flow = withContext(Dispatchers.IO) { git.githubDevice() }
+            connecting = false
+            if (flow == null) {
+                notice = Notice(
+                    "GitHub no está configurado en esta compilación: reemplaza TU_CLIENT_ID en GitServiceCli.kt " +
+                        "(github.com/settings/developers → New OAuth App suele bastar con 1 minuto).",
+                    false, ++noticeId,
+                )
+            } else {
+                deviceFlow = flow
+            }
+        }
+    }
+
+    /** Chooses [repo] as the connected GitHub repository (configures the origin remote). */
+    fun pickRepo(repo: GitHubRepo) {
+        if (connecting) return
+        scope.launch {
+            connecting = true
+            val result = withContext(Dispatchers.IO) { git.githubConnectRepo(repo.fullName, repo.defaultBranch) }
+            connecting = false
+            notice = Notice(result.message, result.success, ++noticeId)
+            if (result.success) {
+                session = session?.copy(repoFullName = repo.fullName, repoDefaultBranch = repo.defaultBranch)
+                reload()
+            }
+        }
+    }
+
+    /** Logs out of GitHub and removes the automatically configured origin remote. */
+    fun logoutGithub() {
+        if (connecting) return
+        scope.launch {
+            connecting = true
+            val result = withContext(Dispatchers.IO) { git.githubDisconnect() }
+            connecting = false
+            session = null
+            repos = emptyList()
+            deviceFlow = null
+            notice = Notice("Desconectado de GitHub.", true, ++noticeId)
+            reload()
+        }
+    }
+
     LaunchedEffect(Unit) { reload() }
 
     LaunchedEffect(notice?.id) {
         if (notice != null) {
             delay(4200)
             notice = null
+        }
+    }
+
+    // Polls GitHub while the device-flow dialog is open, until the user approves (or cancels).
+    LaunchedEffect(deviceFlow?.userCode) {
+        val flow = deviceFlow ?: return@LaunchedEffect
+        while (deviceFlow != null) {
+            delay((flow.intervalSeconds.coerceAtLeast(5)) * 1000L)
+            val result = withContext(Dispatchers.IO) { git.githubPoll() }
+            if (deviceFlow == null) break
+            if (result.success) {
+                session = runCatching { git.githubSession() }.getOrNull()
+                deviceFlow = null
+                notice = Notice(result.message, true, ++noticeId)
+                reload()
+            } else {
+                notice = Notice(result.message, false, ++noticeId)
+                if (result.message.contains("expiró") || result.message.contains("rechazada")) {
+                    deviceFlow = null
+                }
+            }
+        }
+    }
+
+    // Loads the repo list once the account is connected and no repo is picked yet.
+    LaunchedEffect(session?.login) {
+        val s = session
+        if (s != null && s.repoFullName == null && repos.isEmpty()) {
+            val r = withContext(Dispatchers.IO) { git.githubRepos() }
+            repos = r
+            if (r.isEmpty()) {
+                notice = Notice("No se encontraron repositorios en tu cuenta.", false, ++noticeId)
+            }
         }
     }
 
@@ -205,6 +297,37 @@ fun GitPanel(backend: IdeBackend) {
             }
         }
 
+AnimatedVisibility(
+            visible = session != null,
+            enter = fadeIn(tween(Motion.BASE)),
+            exit = fadeOut(tween(Motion.FAST)),
+        ) {
+            Row(Modifier.padding(start = 14.dp, end = 14.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(shape = RoundedCornerShape(50), color = Ide.colors.success.copy(alpha = 0.14f)) {
+                    Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(CaIcons.github, contentDescription = null, tint = Ide.colors.success, modifier = Modifier.size(13.dp))
+                        Text(
+                            "Conectado a GitHub · ${session?.login.orEmpty()}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Ide.colors.success,
+                            modifier = Modifier.padding(start = 5.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (session?.repoFullName != null) {
+                            Text(
+                                " · ${session?.repoFullName}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         AnimatedVisibility(
             visible = currentBranch != null && diffFile == null,
             enter = fadeIn(tween(Motion.BASE)),
@@ -231,59 +354,96 @@ fun GitPanel(backend: IdeBackend) {
             DiffView(diffFile!!, diffText, onBack = { diffFile = null })
         } else {
             LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
-                if (!git.available) {
-                    item { NoRepoCard(initializing = busy == GitOp.Init, onInit = { runOp(GitOp.Init) { git.init() } }) }
-                } else {
-                    item {
-                        SectionCard("Acciones") {
-                            ActionsGrid(
-                                git = git,
-                                hasRemote = remotes.isNotEmpty(),
-                                busy = busy,
-                                runOp = { op, block -> runOp(op, block = block) },
-                                openDialog = { dialog = it },
-                            )
-                        }
-                        Spacer(Modifier.height(10.dp))
-                    }
-                    item {
-                        SectionCard("Repositorio remoto", CaIcons.github) {
-                            RemoteCardBody(
-                                remotes = remotes,
-                                currentBranch = currentBranch,
-                                busyRemove = busy == GitOp.RemoteRemove,
-                                onConnect = { dialog = GitDialog.Remote },
-                                onRemove = { name -> runOp(GitOp.RemoteRemove) { git.removeRemote(name) } },
-                                onOpenUrl = { url -> runCatching { uriHandler.openUri(url) } },
-                            )
-                        }
-                        Spacer(Modifier.height(10.dp))
-                    }
-                    item {
-                        SectionCard("Cambios") {
-                            ChangesCard(
-                                files = files,
-                                onToggleStage = { f ->
-                                    scope.launch(Dispatchers.IO) {
-                                        if (f.staged) git.unstage(listOf(f.path)) else git.stage(listOf(f.path))
-                                        reload()
-                                    }
-                                },
-                                onOpenDiff = { f ->
-                                    scope.launch(Dispatchers.IO) {
-                                        val t = runCatching { git.diff(f.path, f.staged) }.getOrDefault("")
-                                        withContext(Dispatchers.Main) { diffFile = f; diffText = t }
-                                    }
-                                },
-                            )
-                        }
-                        Spacer(Modifier.height(10.dp))
-                    }
-                    item {
-                        SectionCard("Información") {
-                            InfoCardBody(branch = currentBranch, filesCount = files.size, remotes = remotes, lastCommit = lastCommit)
-                        }
+                when {
+                    session == null -> item {
+                        GitHubConnectCard(
+                            connecting = connecting,
+                            onConnect = { startGithubConnect() },
+                            onManageRemote = { dialog = GitDialog.Remote },
+                        )
                         Spacer(Modifier.height(14.dp))
+                    }
+                    session?.repoFullName == null -> {
+                        item {
+                            RepoPickerHeader(
+                                login = session?.login.orEmpty(),
+                                count = repos.size,
+                                connectingRepo = connecting,
+                                onLogout = { logoutGithub() },
+                            )
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        items(repos, key = { it.fullName }) { repo ->
+                            RepoRow(
+                                repo = repo,
+                                connecting = connecting,
+                                onPick = { pickRepo(repo) },
+                            )
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        item { Spacer(Modifier.height(6.dp)) }
+                    }
+                    !git.available -> item {
+                        NoRepoCard(
+                            initializing = busy == GitOp.Init,
+                            onInit = { runOp(GitOp.Init) { git.init() } },
+                            note = "El repositorio también se inicializará solo al subir el proyecto a ${session?.repoFullName.orEmpty()}.",
+                        )
+                        Spacer(Modifier.height(14.dp))
+                    }
+                    else -> {
+                        item {
+                            SectionCard("Acciones") {
+                                ActionsGrid(
+                                    git = git,
+                                    hasRemote = remotes.isNotEmpty(),
+                                    busy = busy,
+                                    runOp = { op, block -> runOp(op, block = block) },
+                                    openDialog = { dialog = it },
+                                    onPush = { dialog = GitDialog.Publish },
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        item {
+                            SectionCard("Repositorio remoto", CaIcons.github) {
+                                RemoteCardBody(
+                                    remotes = remotes,
+                                    currentBranch = currentBranch,
+                                    busyRemove = busy == GitOp.RemoteRemove,
+                                    onConnect = { dialog = GitDialog.Remote },
+                                    onRemove = { name -> runOp(GitOp.RemoteRemove) { git.removeRemote(name) } },
+                                    onOpenUrl = { url -> runCatching { uriHandler.openUri(url) } },
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        item {
+                            SectionCard("Cambios") {
+                                ChangesCard(
+                                    files = files,
+                                    onToggleStage = { f ->
+                                        scope.launch(Dispatchers.IO) {
+                                            if (f.staged) git.unstage(listOf(f.path)) else git.stage(listOf(f.path))
+                                            reload()
+                                        }
+                                    },
+                                    onOpenDiff = { f ->
+                                        scope.launch(Dispatchers.IO) {
+                                            val t = runCatching { git.diff(f.path, f.staged) }.getOrDefault("")
+                                            withContext(Dispatchers.Main) { diffFile = f; diffText = t }
+                                        }
+                                    },
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        item {
+                            SectionCard("Información") {
+                                InfoCardBody(branch = currentBranch, filesCount = files.size, remotes = remotes, lastCommit = lastCommit)
+                            }
+                            Spacer(Modifier.height(14.dp))
+                        }
                     }
                 }
             }
@@ -329,6 +489,21 @@ fun GitPanel(backend: IdeBackend) {
             busy = busy == GitOp.RemoteAdd,
             onDismiss = { dialog = null },
             onConnect = { name, url -> runOp(GitOp.RemoteAdd) { git.addRemote(name, url) } },
+        )
+        GitDialog.Device -> DeviceFlowDialog(
+            flow = deviceFlow,
+            onDismiss = { deviceFlow = null },
+            onOpen = { uri -> runCatching { uriHandler.openUri(uri) } },
+        )
+        GitDialog.Publish -> PublishDialog(
+            defaultBranch = session?.repoDefaultBranch ?: currentBranch ?: "main",
+            currentBranch = currentBranch,
+            repoName = session?.repoFullName.orEmpty(),
+            busy = busy == GitOp.Publish,
+            onDismiss = { dialog = null },
+            onPublish = { mode, branch, message ->
+                runOp(GitOp.Publish) { git.publish(mode, branch, message) }
+            },
         )
         null -> Unit
     }
@@ -382,7 +557,7 @@ private fun NoticeBar(notice: Notice?) {
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun NoRepoCard(initializing: Boolean, onInit: () -> Unit) {
+private fun NoRepoCard(initializing: Boolean, onInit: () -> Unit, note: String = "") {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
@@ -400,7 +575,7 @@ private fun NoRepoCard(initializing: Boolean, onInit: () -> Unit) {
                 modifier = Modifier.padding(top = 14.dp),
             )
             Text(
-                "Inicializa un repositorio para empezar a usar Control de versiones.",
+                note.ifEmpty { "Inicializa un repositorio para empezar a usar Control de versiones." },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -494,17 +669,15 @@ private fun ActionsGrid(
     busy: GitOp?,
     runOp: (GitOp, suspend () -> GitOpResult) -> Unit,
     openDialog: (GitDialog) -> Unit,
+    onPush: () -> Unit,
 ) {
     val enabled = busy == null
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         ActionTile("Commit", CaIcons.check, running = busy == GitOp.Commit, enabled = enabled, modifier = Modifier.weight(1f)) {
             openDialog(GitDialog.Commit)
         }
-        ActionTile("Push", CaIcons.upload, running = busy == GitOp.Push, enabled = enabled, modifier = Modifier.weight(1f)) {
-            runOp(GitOp.Push) {
-                if (!hasRemote) GitOpResult.fail("No hay un repositorio remoto configurado. Conéctalo en la sección Repositorio remoto.")
-                else git.push()
-            }
+        ActionTile("Push", CaIcons.upload, running = busy == GitOp.Publish, enabled = enabled, modifier = Modifier.weight(1f)) {
+            onPush()
         }
     }
     Spacer(Modifier.height(10.dp))
@@ -1052,6 +1225,267 @@ private fun RemoteDialog(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// GitHub connect / repo picker / device-flow UI
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun GitHubConnectCard(connecting: Boolean, onConnect: () -> Unit, onManageRemote: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)) {
+                Icon(CaIcons.github, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(16.dp).size(32.dp))
+            }
+            Text(
+                "Conectar con GitHub",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 14.dp),
+            )
+            Text(
+                "Inicia sesión con tu cuenta de GitHub para ver tus repositorios, elegir uno " +
+                    "y subir tu proyecto directamente a tu perfil. No saldrás de la app: GitHub te " +
+                    "mostrará un código de 8 dígitos que confirmas en el navegador.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 18.dp)
+                    .clickable(enabled = !connecting) { onConnect() },
+            ) {
+                Row(Modifier.padding(horizontal = 24.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (connecting) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                    } else {
+                        Icon(CaIcons.github, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(16.dp))
+                    }
+                    Text(
+                        "Conectar con GitHub",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+            TextButton(onClick = onManageRemote, enabled = !connecting) {
+                Text("O configurar un remoto manualmente (URL)", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RepoPickerHeader(login: String, count: Int, connectingRepo: Boolean, onLogout: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = CircleShape, color = Ide.colors.success.copy(alpha = 0.14f)) {
+                Icon(CaIcons.github, contentDescription = null, tint = Ide.colors.success, modifier = Modifier.padding(10.dp).size(24.dp))
+            }
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text("Elige tu repositorio", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (count == 0) "Cargando repositorios de @$login…"
+                    else "Selecciona a dónde subirás tu proyecto, @$login",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onLogout, enabled = !connectingRepo) { Text("Cerrar sesión") }
+        }
+    }
+}
+
+@Composable
+private fun RepoRow(repo: GitHubRepo, connecting: Boolean, onPick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) Motion.PRESS_SCALE else 1f,
+        animationSpec = tween(Motion.FAST),
+        label = "repoPress",
+    )
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().graphicsLayer { scaleX = scale; scaleY = scale }
+            .clickable(interactionSource = interaction, enabled = !connecting) { onPick() },
+    ) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(CaIcons.gitBranch, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(repo.fullName, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    "Rama predeterminada: ${repo.defaultBranch}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(CaIcons.link, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun DeviceFlowDialog(flow: GitHubDeviceFlow?, onDismiss: () -> Unit, onOpen: (String) -> Unit) {
+    if (flow == null) return
+    DialogShell("Conectar con GitHub", onDismiss) {
+        Text(
+            "Ingresa este código en github.com/login/device dentro de tu navegador:",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            flow.userCode,
+            style = MaterialTheme.typography.headlineMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(top = 10.dp),
+        )
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(top = 14.dp).fillMaxWidth().clickable { onOpen(flow.verificationUri) },
+        ) {
+            Row(Modifier.padding(horizontal = 18.dp, vertical = 11.dp), horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                Icon(CaIcons.share, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(16.dp))
+                Text(
+                    "Abrir ${flow.verificationUri}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+        Text(
+            "La app comprueba automáticamente cada ${flow.intervalSeconds} s. No cierres este diálogo.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 10.dp),
+        )
+        Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
+        }
+    }
+}
+
+@Composable
+private fun PublishDialog(
+    defaultBranch: String,
+    currentBranch: String?,
+    repoName: String,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onPublish: (PublishMode, String, String) -> Unit,
+) {
+    var mode by remember { mutableStateOf(PublishMode.FULL_PROJECT) }
+    var branch by remember { mutableStateOf(defaultBranch) }
+    var message by remember { mutableStateOf("") }
+    DialogShell("Subir a GitHub", onDismiss) {
+        Text(
+            "Destino: $repoName",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        ModeOption(
+            selected = mode == PublishMode.FULL_PROJECT,
+            enabled = !busy,
+            title = "Todo el proyecto",
+            subtitle = "Inicializa el repositorio y sube todas las carpetas y archivos del proyecto.",
+            onClick = { mode = PublishMode.FULL_PROJECT },
+        )
+        Spacer(Modifier.height(8.dp))
+        ModeOption(
+            selected = mode == PublishMode.CHANGES_ONLY,
+            enabled = !busy,
+            title = "Solo mis cambios",
+            subtitle = "Sube únicamente los cambios del árbol de trabajo (recomendado en cada edición).",
+            onClick = { mode = PublishMode.CHANGES_ONLY },
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = branch,
+            onValueChange = { branch = it },
+            label = { Text("Rama de destino (github.com)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = message,
+            onValueChange = { message = it },
+            label = { Text("Mensaje del commit (opcional)") },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 2,
+        )
+        Text(
+            if (currentBranch != null && currentBranch != branch) "Se publicará tu rama $currentBranch en la rama $branch de GitHub."
+            else "Se publicará tu rama actual en $branch de GitHub.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") }
+            TextButton(onClick = { onPublish(mode, branch, message) }, enabled = !busy && branch.isNotBlank()) {
+                if (busy) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                Text(if (busy) "Subiendo…" else "Subir proyecto", modifier = Modifier.padding(start = if (busy) 6.dp else 0.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeOption(
+    selected: Boolean,
+    enabled: Boolean,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f) else MaterialTheme.colorScheme.outlineVariant,
+        ),
+        modifier = Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick),
+    ) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                if (selected) CaIcons.check else CaIcons.dot,
+                contentDescription = null,
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                modifier = Modifier.size(18.dp),
+            )
+            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+    }
+}
 
 private fun relativeTime(ms: Long): String {
     val diff = System.currentTimeMillis() - ms

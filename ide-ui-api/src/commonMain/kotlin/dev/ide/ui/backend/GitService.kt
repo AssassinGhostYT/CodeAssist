@@ -49,6 +49,35 @@ data class GitCommitInfo(
     val dateMillis: Long,
 )
 
+/** GitHub device-flow step 1: the code the user enters at [verificationUri]. */
+data class GitHubDeviceFlow(
+    val userCode: String,
+    val verificationUri: String,
+    val intervalSeconds: Long,
+)
+
+/** A GitHub repository the connected account can push to. */
+data class GitHubRepo(
+    val fullName: String,
+    val defaultBranch: String,
+)
+
+/** The active GitHub session: who is connected and which repo is selected (null until one is picked). */
+data class GitHubSession(
+    val login: String,
+    val name: String,
+    val repoFullName: String? = null,
+    val repoDefaultBranch: String? = null,
+)
+
+/** What a "subir al remoto" (publish) operation should upload. */
+enum class PublishMode {
+    /** Init the repo (if needed), commit EVERYTHING in the workspace and push. */
+    FULL_PROJECT,
+    /** Commit and push only the working-tree changes. */
+    CHANGES_ONLY,
+}
+
 /**
  * Source-control integration surfaced by the Source-control panel. Operations run against the workspace's
  * git repository (via JGit on Android — there is no `git` CLI on device). [NoopGitService] is the default so
@@ -109,6 +138,26 @@ interface GitService {
     /** Initialize a git repository at the workspace root (no-op if one already exists). */
     fun init(): GitOpResult
 
+    /**
+     * GitHub login (OAuth device flow):
+     * [githubDevice] starts the flow and returns the code to show; poll [githubPoll] (every `intervalSeconds`)
+     * until the user approves. Once it succeeds, [githubSession] reflects the logged-in account.
+     */
+    val githubAvailable: Boolean
+    fun githubDevice(): GitHubDeviceFlow?
+    fun githubPoll(): GitOpResult
+    fun githubSession(): GitHubSession?
+    fun githubRepos(): List<GitHubRepo>
+    fun githubConnectRepo(fullName: String, defaultBranch: String): GitOpResult
+    fun githubDisconnect(): GitOpResult
+
+    /**
+     * Publish the workspace to the connected GitHub repo: [FULL_PROJECT] initializes the repo (if needed),
+     * stages everything and creates an initial commit; [CHANGES_ONLY] commits only the working-tree changes.
+     * [branch] is the remote target branch, [message] overrides the auto commit message.
+     */
+    fun publish(mode: PublishMode, branch: String, message: String): GitOpResult
+
     /** Drop any cached state (called after operations that change the tree). */
     fun refresh()
 }
@@ -138,5 +187,13 @@ object NoopGitService : GitService {
     override fun removeRemote(name: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
     override fun lastCommit(): GitCommitInfo? = null
     override fun init(): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override val githubAvailable: Boolean get() = false
+    override fun githubDevice(): GitHubDeviceFlow? = null
+    override fun githubPoll(): GitOpResult = GitOpResult.fail("GitHub no está configurado en este entorno.")
+    override fun githubSession(): GitHubSession? = null
+    override fun githubRepos(): List<GitHubRepo> = emptyList()
+    override fun githubConnectRepo(fullName: String, defaultBranch: String): GitOpResult = GitOpResult.fail("GitHub no está configurado en este entorno.")
+    override fun githubDisconnect(): GitOpResult = GitOpResult.fail("GitHub no está configurado en este entorno.")
+    override fun publish(mode: PublishMode, branch: String, message: String): GitOpResult = GitOpResult.fail("GitHub no está configurado en este entorno.")
     override fun refresh() {}
 }

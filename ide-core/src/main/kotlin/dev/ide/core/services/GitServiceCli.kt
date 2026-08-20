@@ -4,11 +4,20 @@ import dev.ide.core.EngineContext
 import dev.ide.ui.backend.GitBranch
 import dev.ide.ui.backend.GitCommitInfo
 import dev.ide.ui.backend.GitFile
+import dev.ide.ui.backend.GitHubDeviceFlow
+import dev.ide.ui.backend.GitHubRepo
+import dev.ide.ui.backend.GitHubSession
 import dev.ide.ui.backend.GitOpResult
 import dev.ide.ui.backend.GitRemote
 import dev.ide.ui.backend.GitService
 import dev.ide.ui.backend.GitStash
 import dev.ide.ui.backend.GitStatus
+import dev.ide.ui.backend.PublishMode
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.eclipse.jgit.api.CreateBranchCommand.SetupUpstreamMode
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.ListBranchCommand.ListMode
@@ -16,10 +25,17 @@ import org.eclipse.jgit.api.MergeStatus
 import org.eclipse.jgit.diff.DiffEntry
 import org.eclipse.jgit.diff.DiffFormatter
 import org.eclipse.jgit.lib.Constants
+import org.eclipse.jgit.transport.RefSpec
 import org.eclipse.jgit.transport.TrackingRefUpdate
 import org.eclipse.jgit.transport.URIish
+import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.util.Properties
 
 /**
  * Git integration backed by JGit (pure Java, runs on ART — no `git` CLI, which Android doesn't ship). Every
@@ -30,7 +46,52 @@ import java.io.File
  */
 internal class GitServiceCli(private val ctx: EngineContext) : GitService {
 
+    /**
+     * Replace with your GitHub OAuth App client id (github.com/settings/developers → New OAuth App → keep the
+     * callback URL unused — the device flow never calls it). Without a real client id the connect flow reports
+     * a readable error instead of failing silently.
+     */
+    private companion object {
+        const val GITHUB_CLIENT_ID = "TU_CLIENT_ID"
+        const val SESSION_FILE = "github-session.properties"
+    }
+
     private val root: File get() = ctx.workspaceRoot.toFile()
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private val sessionFile: File
+        get() {
+            val cached = ctx.sharedCachesRoot
+            return if (cached != null) cached.resolve(SESSION_FILE).toFile()
+            else File(File(System.getProperty("java.io.tmpdir") ?: "."), SESSION_FILE)
+        }
+
+    private fun readSession(): Properties? = runCatching {
+        val file = sessionFile
+        if (!file.isFile) return null
+        Properties().apply { file.inputStream().use(::load) }
+    }.getOrNull()
+
+    private fun writeSession(props: Properties): Boolean = runCatching {
+        sessionFile.parentFile?.mkdirs()
+        sessionFile.outputStream().use { props.store(it, "CodeAssist GitHub session") }
+    }.isSuccess
+
+    private fun clearSession() {
+        sessionFile.delete()
+        _deviceFlow = null
+        _deviceCode = null
+    }
+
+    private fun sessionToken(): String? =
+        readSession()?.getProperty("token")?.takeIf { it.isNotBlank() && it != GITHUB_CLIENT_ID }
+
+    private fun githubCredentials() = sessionToken()?.let { UsernamePasswordCredentialsProvider("x-access-token", it) }
+
+    /** Pending device-flow state (kept in memory only — polling needs the device code between checks). */
+    private var _deviceCode: String? = null
+    private var _deviceFlow: GitHubDeviceFlow? = null
 
     override val available: Boolean get() = File(root, ".git").exists()
 
@@ -127,14 +188,18 @@ internal class GitServiceCli(private val ctx: EngineContext) : GitService {
     override fun push(remote: String): GitOpResult {
         return run({ git ->
             val b = branch() ?: return@run GitOpResult.fail("No se pudo determinar la rama actual.")
-            git.push().setRemote(remote).call()
+            val cmd = git.push().setRemote(remote)
+            githubCredentials()?.let { cmd.setCredentialsProvider(it) }
+            cmd.call()
             GitOpResult.ok("Push a $remote/$b completado.")
         }, "Git no está disponible en este entorno.")
     }
 
     override fun pull(remote: String): GitOpResult {
         return run({ git ->
-            val result = git.pull().setRemote(remote).setRebase(false).call()
+            val cmd = git.pull().setRemote(remote).setRebase(false)
+            githubCredentials()?.let { cmd.setCredentialsProvider(it) }
+            val result = cmd.call()
             val mergeResult = result.mergeResult
             val conflicts = mergeResult?.conflicts?.keys?.toList().orEmpty()
             when {
@@ -147,7 +212,9 @@ internal class GitServiceCli(private val ctx: EngineContext) : GitService {
 
     override fun fetch(remote: String): GitOpResult {
         return run({ git ->
-            val result = git.fetch().setRemote(remote).call()
+            val cmd = git.fetch().setRemote(remote)
+            githubCredentials()?.let { cmd.setCredentialsProvider(it) }
+            val result = cmd.call()
             val updated = result.trackingRefUpdates.filter {
                 it.result == TrackingRefUpdate.Result.NEW ||
                     it.result == TrackingRefUpdate.Result.FAST_FORWARD ||
@@ -308,4 +375,215 @@ internal class GitServiceCli(private val ctx: EngineContext) : GitService {
     }
 
     override fun refresh() {}
+
+    // ------------------------------------------------------------------ GitHub OAuth (device flow)
+
+    override val githubAvailable: Boolean
+        get() = true
+
+    override fun githubDevice(): GitHubDeviceFlow? {
+        if (GITHUB_CLIENT_ID == "TU_CLIENT_ID") return null
+        val body = post("https://github.com/login/device/code", mapOf(
+            "client_id" to GITHUB_CLIENT_ID,
+            "scope" to "repo user",
+        ))
+        val obj = body?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() }
+        if (obj == null) return null
+        val flow = GitHubDeviceFlow(
+            userCode = obj.str("user_code") ?: "",
+            verificationUri = obj.str("verification_uri") ?: "",
+            intervalSeconds = obj.str("interval")?.toLongOrNull() ?: 5L,
+        )
+        if (flow.userCode.isBlank() || flow.verificationUri.isBlank()) return null
+        _deviceCode = obj.str("device_code")
+        _deviceFlow = flow
+        return flow
+    }
+
+    override fun githubPoll(): GitOpResult {
+        val flow = _deviceFlow ?: return GitOpResult.fail("Inicia la conexión a GitHub primero.")
+        val code = _deviceCode ?: return GitOpResult.fail("Inicia la conexión a GitHub primero.")
+        val raw = runCatching {
+            post("https://github.com/login/oauth/access_token", mapOf(
+                "client_id" to GITHUB_CLIENT_ID,
+                "device_code" to code,
+                "grant_type" to "urn:ietf:params:oauth:grant-type:device_code",
+            ))
+        }.getOrNull()
+        val obj = raw?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() }
+        if (obj == null) return GitOpResult.fail("No se pudo contactar a GitHub: $raw".take(120))
+        val token = obj.str("access_token")
+        if (token != null) {
+            val (login, name) = githubUser(token) ?: run {
+                _deviceFlow = null
+                _deviceCode = null
+                return GitOpResult.fail("Token recibido pero no se pudo cargar tu perfil.")
+            }
+            val props = readSession() ?: Properties()
+            props.setProperty("token", token)
+            props.setProperty("login", login)
+            props.setProperty("name", name ?: login)
+            writeSession(props)
+            _deviceFlow = null
+            _deviceCode = null
+            return GitOpResult.ok("Conectado a GitHub como $login.")
+        }
+        return when (obj.str("error")) {
+            "authorization_pending" -> GitOpResult.fail("Aún no confirmas el código en GitHub.")
+            "slow_down" -> GitOpResult.fail("Espera un momento e inténtalo de nuevo.")
+            "expired_token" -> {
+                _deviceFlow = null
+                _deviceCode = null
+                GitOpResult.fail("El código expiró. Vuelve a iniciar la conexión.")
+            }
+            "access_denied" -> {
+                _deviceFlow = null
+                _deviceCode = null
+                GitOpResult.fail("Autorización rechazada en GitHub.")
+            }
+            else -> GitOpResult.fail("GitHub aún no confirma el código: ${obj.str("error_message") ?: "esperando…"}")
+        }
+    }
+
+    override fun githubSession(): GitHubSession? {
+        val props = readSession() ?: return null
+        val login = props.getProperty("login") ?: return null
+        return GitHubSession(
+            login = login,
+            name = props.getProperty("name") ?: login,
+            repoFullName = props.getProperty("repo"),
+            repoDefaultBranch = props.getProperty("defaultBranch"),
+        )
+    }
+
+    override fun githubRepos(): List<GitHubRepo> {
+        val token = sessionToken() ?: return emptyList()
+        val raw = get("https://api.github.com/user/repos?per_page=100&affiliation=owner,collaborator,organization_member", token)
+        val arr = raw?.let { runCatching { json.parseToJsonElement(it).jsonArray }.getOrNull() } ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val obj = el.jsonObject
+            val fullName = obj.str("full_name") ?: return@mapNotNull null
+            GitHubRepo(fullName = fullName, defaultBranch = obj.str("default_branch") ?: "main")
+        }
+    }
+
+    override fun githubConnectRepo(fullName: String, defaultBranch: String): GitOpResult {
+        val props = readSession() ?: return GitOpResult.fail("Conéctate a GitHub primero.")
+        props.setProperty("repo", fullName)
+        props.setProperty("defaultBranch", defaultBranch)
+        if (!writeSession(props)) return GitOpResult.fail("No se pudo guardar la selección del repositorio.")
+        val url = "https://github.com/$fullName.git"
+        val git = open()
+        if (git != null) {
+            runCatching {
+                val origin = git.remoteList().call().find { it.name == "origin" }
+                if (origin != null) git.remoteRemove().setName("origin").call()
+                git.remoteAdd().setName("origin").setUri(URIish(url)).call()
+            }.onFailure {
+                return GitOpResult.fail("Repositorio conectado, pero no se pudo configurar el remoto: ${it.message?.take(120)}")
+            }
+        }
+        return GitOpResult.ok("Repositorio $fullName seleccionado.")
+    }
+
+    override fun githubDisconnect(): GitOpResult {
+        clearSession()
+        val git = open()
+        if (git != null) runCatching { git.remoteRemove().setName("origin").call() }
+        return GitOpResult.ok("Desconectado de GitHub.")
+    }
+
+    override fun publish(mode: PublishMode, branch: String, message: String): GitOpResult {
+        val props = readSession() ?: return GitOpResult.fail("Conéctate a GitHub primero.")
+        val repo = props.getProperty("repo")
+        val token = props.getProperty("token")
+        if (repo == null || token == null) return GitOpResult.fail("Elige un repositorio de GitHub primero.")
+        val target = branch.trim().ifEmpty { props.getProperty("defaultBranch") ?: "main" }
+
+        if (!available) {
+            val initResult = init()
+            if (!initResult.success) return initResult
+        }
+
+        return run({ git ->
+            git.add().addFilepattern(".").call()
+            git.add().addFilepattern(".").setUpdate(true).call()
+
+            val status = git.status().call()
+            val hasStaged = status.added.isNotEmpty() || status.changed.isNotEmpty() ||
+                status.removed.isNotEmpty() || status.modified.isNotEmpty() || status.missing.isNotEmpty()
+            val hasHead = git.repository.resolve(Constants.HEAD) != null
+            if (!hasStaged && !hasHead) return@run GitOpResult.fail("No hay contenido que subir a $repo.")
+
+            val current = branch() ?: "main"
+            if (!hasStaged && mode == PublishMode.CHANGES_ONLY) {
+                return@run GitOpResult.fail("No hay cambios para subir.")
+            }
+            if (hasStaged) {
+                val finalMessage = message.trim().ifEmpty {
+                    if (hasHead) "Update from CodeAssist" else "Initial commit"
+                }
+                git.commit().setMessage(finalMessage).call()
+            }
+            pushTo(git, current, target, repo, token)
+        }, "No se pudo publicar el proyecto.")
+    }
+
+    private fun pushTo(git: Git, local: String, target: String, repo: String, token: String): GitOpResult {
+        return runCatching {
+            val url = "https://github.com/$repo.git"
+            val origin = git.remoteList().call().find { it.name == "origin" }
+            if (origin == null || origin.uris.firstOrNull()?.toString() != url) {
+                if (origin != null) git.remoteRemove().setName("origin").call()
+                git.remoteAdd().setName("origin").setUri(URIish(url)).call()
+            }
+            git.push()
+                .setRemote("origin")
+                .setRefSpecs(RefSpec("refs/heads/$local:refs/heads/$target"))
+                .setCredentialsProvider(UsernamePasswordCredentialsProvider("x-access-token", token))
+                .call()
+            GitOpResult.ok("Proyecto subido a github.com/$repo (rama $target).")
+        }.getOrElse {
+            GitOpResult.fail("No se pudo subir a GitHub: ${it.message?.lineSequence()?.firstOrNull()?.take(120) ?: "error"}")
+        }
+    }
+
+    private fun githubUser(token: String): Pair<String, String?>? {
+        val raw = get("https://api.github.com/user", token)
+        val obj = raw?.let { runCatching { json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return null
+        val login = obj.str("login") ?: return null
+        return login to obj.str("name")
+    }
+
+    private fun JsonObject.str(key: String): String? =
+        this[key]?.jsonPrimitive?.content
+
+    private fun post(url: String, form: Map<String, String>): String? =
+        post(url, form, null)
+
+    private fun post(url: String, form: Map<String, String>, token: String?): String? = runCatching {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            setRequestProperty("Accept", "application/json")
+            if (token != null) setRequestProperty("Authorization", "Bearer $token")
+        }
+        val body = form.entries.joinToString("&") { (k, v) ->
+            "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
+        }
+        conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        stream?.bufferedReader()?.use { it.readText() }
+    }.getOrNull()
+
+    private fun get(url: String, token: String?): String? = runCatching {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/json")
+            if (token != null) setRequestProperty("Authorization", "Bearer $token")
+        }
+        val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+        stream?.bufferedReader()?.use { it.readText() }
+    }.getOrNull()
 }
