@@ -140,6 +140,32 @@ object CaIcons {
     val code = build("code", s("M9 8l-4 4 4 4M15 8l4 4-4 4"))
     val eye = build("eye", s("M2.5 12s3.4-6.3 9.5-6.3S21.5 12 21.5 12 18.1 18.3 12 18.3 2.5 12 2.5 12z"), circle(12f, 12f, 2.7f))
     val gitBranch = build("git-branch", circle(7f, 6f, 2.5f), circle(7f, 18f, 2.5f), circle(17f, 9f, 2.5f), s("M7 8.5v7M17 11.5c0 3-4 2.5-7 4"))
+    /** Arrow up out of a tray — push changes to the remote. */
+    val upload = build("upload", s("M12 16V4.5M8 8l4-4 4 4"), s("M5 12v6.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V12"))
+    /** Git merge: two source circles joined into one target. */
+    val merge = build(
+        "merge",
+        circle(6.5f, 6.5f, 2.4f),
+        circle(6.5f, 17.5f, 2.4f),
+        circle(18f, 12f, 2.4f),
+        s("M6.5 8.9v6.2M8.8 9.4c.3 3.2 3 4.9 7.6 4.2M8.9 16.8c2.8-.6 6.7.2 7.5 1.2"),
+    )
+    /** An archive box with a lid line — stashes. */
+    val archive = build(
+        "archive",
+        s("M4.5 6h15v3.5H4.5z"),
+        s("M6.5 9.5v8a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5v-8"),
+        s("M10 13.5h4"),
+    )
+    /** A chain link — connect a remote repository. */
+    val link = build("link", s("M9.5 14.5l5-5M8 11.5L6.2 13.3a3.2 3.2 0 0 0 4.5 4.5l1.8-1.8M16 12.5l1.8-1.8a3.2 3.2 0 0 0-4.5-4.5L11.5 8"), s("M11.5 8l1.8-1.8") )
+    /** The official GitHub mark (simple-icons path), filled — the remote/GitHub affordance. */
+    val github = build(
+        "github",
+        f(
+            "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12",
+        ),
+    )
     val pin = build("pin", s("M9 4h6l-.8 5 2.3 2.5h-9L9.8 9z"), s("M12 13.5V20"))
     /** A closed padlock (shackle latched on both sides) — the preview "lock the view" toggle when active. */
     val lock = build("lock", roundRect(5f, 11f, 14f, 9f, 2f), s("M8 11V8a4 4 0 0 1 8 0v3"))

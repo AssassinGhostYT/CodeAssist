@@ -1,10 +1,11 @@
 package dev.ide.ui.backend
 
-/**
- * Source-control integration surfaced by the Source-control panel. Operations run against the workspace's
- * git repository (via the `git` CLI on the host). [NoopGitService] is the default so backends that don't
- * wire a real implementation keep compiling and degrade gracefully.
- */
+/** Working-tree change kind for a [GitFile]. */
+enum class GitStatus {
+    Added, Modified, Deleted, Untracked,
+}
+
+/** A working-tree change: [path] with [status], [staged] when prepared in the index. */
 data class GitFile(
     val path: String,
     val status: GitStatus,
@@ -12,8 +13,49 @@ data class GitFile(
     val staged: Boolean,
 )
 
+/**
+ * Structured outcome of a git operation: human-readable [message] plus — for merge/pull — the [conflicts]
+ * (file paths) when the operation hit a merge conflict.
+ */
+data class GitOpResult(
+    val success: Boolean,
+    val message: String,
+    val conflicts: List<String> = emptyList(),
+) {
+    companion object {
+        fun ok(message: String) = GitOpResult(success = true, message = message)
+        fun fail(message: String) = GitOpResult(success = false, message = message)
+    }
+}
+
+/** A git branch: [name] (local `main` or remote `origin/main`), [isCurrent] and whether it's a remote ref. */
+data class GitBranch(
+    val name: String,
+    val isCurrent: Boolean,
+    val isRemote: Boolean,
+)
+
+/** One stash entry: [id] matches git's `stash@{id}` numbering (0 = most recent). */
+data class GitStash(val id: Int, val message: String)
+
+/** A configured remote: [name] (e.g. `origin`) and its [url]. */
+data class GitRemote(val name: String, val url: String)
+
+/** The repository's HEAD commit: short hash, subject, author and timestamp. */
+data class GitCommitInfo(
+    val shortHash: String,
+    val message: String,
+    val author: String,
+    val dateMillis: Long,
+)
+
+/**
+ * Source-control integration surfaced by the Source-control panel. Operations run against the workspace's
+ * git repository (via JGit on Android — there is no `git` CLI on device). [NoopGitService] is the default so
+ * backends that don't wire a real implementation keep compiling and degrade gracefully.
+ */
 interface GitService {
-    /** False when `git` is missing or the workspace isn't inside a repository. */
+    /** False when git isn't wired or the workspace isn't inside a repository. */
     val available: Boolean
 
     /** Current branch name, or null when unavailable. */
@@ -28,17 +70,44 @@ interface GitService {
     fun stage(paths: List<String>)
     fun unstage(paths: List<String>)
 
-    /** Create a commit with [message]; returns a short human-readable result. */
-    fun commit(message: String): String
+    /** Create a commit with [message]; reports success/error. */
+    fun commit(message: String): GitOpResult
 
-    /** Push the current branch to [remote]; returns a short human-readable result. */
-    fun push(remote: String = "origin"): String
+    /** Push the current branch to [remote]; reports success/error. */
+    fun push(remote: String = "origin"): GitOpResult
 
-    /** Configured remotes (e.g. `["origin"]`). */
-    fun remotes(): List<String>
+    /** Pull [remote] into the current branch; [conflicts] carries the affected files when it conflicted. */
+    fun pull(remote: String = "origin"): GitOpResult
+
+    /** Fetch [remote] refs without touching the working tree; reports what changed. */
+    fun fetch(remote: String = "origin"): GitOpResult
+
+    /** Merge [branch] into the current branch; [conflicts] carries the affected files when it conflicted. */
+    fun merge(branch: String): GitOpResult
+
+    /** All local + remote branches, current one flagged. */
+    fun branches(): List<GitBranch>
+
+    fun createBranch(name: String): GitOpResult
+    fun checkoutBranch(name: String): GitOpResult
+    fun deleteBranch(name: String): GitOpResult
+
+    fun stashSave(message: String): GitOpResult
+    fun stashList(): List<GitStash>
+    fun stashRestore(stashId: Int): GitOpResult
+    fun stashDrop(stashId: Int): GitOpResult
+
+    /** Configured remotes (e.g. `origin`). */
+    fun remotes(): List<GitRemote>
+
+    fun addRemote(name: String, url: String): GitOpResult
+    fun removeRemote(name: String): GitOpResult
+
+    /** HEAD commit when the repo has at least one, else null. */
+    fun lastCommit(): GitCommitInfo?
 
     /** Initialize a git repository at the workspace root (no-op if one already exists). */
-    fun init(): String
+    fun init(): GitOpResult
 
     /** Drop any cached state (called after operations that change the tree). */
     fun refresh()
@@ -51,9 +120,23 @@ object NoopGitService : GitService {
     override fun diff(path: String, staged: Boolean): String = ""
     override fun stage(paths: List<String>) {}
     override fun unstage(paths: List<String>) {}
-    override fun commit(message: String): String = "Git no está disponible en este entorno."
-    override fun push(remote: String): String = "Git no está disponible en este entorno."
-    override fun remotes(): List<String> = emptyList()
-    override fun init(): String = "Git no está disponible en este entorno."
+    override fun commit(message: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun push(remote: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun pull(remote: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun fetch(remote: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun merge(branch: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun branches(): List<GitBranch> = emptyList()
+    override fun createBranch(name: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun checkoutBranch(name: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun deleteBranch(name: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun stashSave(message: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun stashList(): List<GitStash> = emptyList()
+    override fun stashRestore(stashId: Int): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun stashDrop(stashId: Int): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun remotes(): List<GitRemote> = emptyList()
+    override fun addRemote(name: String, url: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun removeRemote(name: String): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
+    override fun lastCommit(): GitCommitInfo? = null
+    override fun init(): GitOpResult = GitOpResult.fail("Git no está disponible en este entorno.")
     override fun refresh() {}
 }
