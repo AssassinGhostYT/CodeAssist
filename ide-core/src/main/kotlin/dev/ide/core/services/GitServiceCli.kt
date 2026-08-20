@@ -97,9 +97,12 @@ internal class GitServiceCli(private val ctx: EngineContext) : GitService {
 
     private fun open(): Git? = runCatching { Git.open(root) }.getOrNull()
 
+    /** Extension function to run a block on the Git instance. */
+    private fun Git.run(block: () -> GitOpResult): GitOpResult = block()
+
     private fun run(block: Git.() -> GitOpResult, noRepo: String): GitOpResult {
         val git = open() ?: return GitOpResult.fail(noRepo)
-        return runCatching { git.block() }.getOrElse {
+        return runCatching { git.run(block) }.getOrElse {
             GitOpResult.fail("No se pudo completar la operación: ${it.message?.lineSequence()?.firstOrNull()?.take(120) ?: "error"}")
         }
     }
@@ -337,7 +340,7 @@ internal class GitServiceCli(private val ctx: EngineContext) : GitService {
         val git = open() ?: return emptyList()
         return runCatching {
             git.remoteList().call().map { remote ->
-                val url = remote.uris.firstOrNull()?.toString().orEmpty()
+                val url = remote.urIs.firstOrNull()?.toString().orEmpty()
                 GitRemote(name = remote.name, url = url)
             }
         }.getOrDefault(emptyList())
@@ -533,7 +536,7 @@ internal class GitServiceCli(private val ctx: EngineContext) : GitService {
         return runCatching {
             val url = "https://github.com/$repo.git"
             val origin = git.remoteList().call().find { it.name == "origin" }
-            if (origin == null || origin.uris.firstOrNull()?.toString() != url) {
+            if (origin == null || origin.urIs.firstOrNull()?.toString() != url) {
                 if (origin != null) git.remoteRemove().setName("origin").call()
                 git.remoteAdd().setName("origin").setUri(URIish(url)).call()
             }
