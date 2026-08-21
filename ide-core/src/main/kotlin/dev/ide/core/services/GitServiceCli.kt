@@ -97,15 +97,12 @@ internal class GitServiceCli(private val ctx: EngineContext) : GitService {
 
     private fun open(): Git? = runCatching { Git.open(root) }.getOrNull()
 
-    /** Extension function to run a block on the Git instance. */
-    private fun Git.run(block: () -> GitOpResult): GitOpResult = block()
-
-    private fun run(block: Git.() -> GitOpResult, noRepo: String): GitOpResult {
-        val git = open() ?: return GitOpResult.fail(noRepo)
-        return runCatching { git.run(block) }.getOrElse {
-            GitOpResult.fail("No se pudo completar la operación: ${it.message?.lineSequence()?.firstOrNull()?.take(120) ?: "error"}")
-        }
+    private fun run(block: (Git) -> GitOpResult, noRepo: String): GitOpResult {
+    val git = open() ?: return GitOpResult.fail(noRepo)
+    return runCatching { block(git) }.getOrElse {
+        GitOpResult.fail("No se pudo completar la operación: ${it.message?.lineSequence()?.firstOrNull()?.take(120) ?: "error"}")
     }
+}
 
     override fun init(): GitOpResult {
         if (available) return GitOpResult.ok("El repositorio ya está inicializado.")
