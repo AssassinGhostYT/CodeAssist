@@ -179,10 +179,10 @@ internal class GitServiceCli(private val ctx: EngineContext) : GitService {
     override fun commit(message: String): GitOpResult {
         val msg = message.trim()
         if (msg.isEmpty()) return GitOpResult.fail("Escribe un mensaje de commit.")
-        return run { git ->
+        return run({ git: Git ->
             val commit = git.commit().setMessage(msg).call()
             GitOpResult.ok("Commit ${commit.name.take(7)} creado en ${branch() ?: "la rama actual"}.")
-        }
+        }, "Git no está disponible en este entorno.")
     }
 
     override fun push(remote: String): GitOpResult {
